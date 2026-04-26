@@ -1,71 +1,106 @@
-# cf README
+<div align="center">
 
-This is the README for your extension "cf". After writing up a brief description, we recommend including the following sections.
+# **Context-Forge**
 
-## Features
+</div>
 
-Describe specific features of your extension including screenshots of your extension in action. Image paths are relative to this README file.
+## Description
 
-For example if there is an image subfolder under your extension project workspace:
+Context-Forge is a VS Code extension designed to make projects context-aware for AI-assisted development.
 
-\!\[feature X\]\(images/feature-x.png\)
+Instead of forcing AI tools to repeatedly scan and understand an entire codebase, Context-Forge creates a structured memory system inside the project that stores architecture decisions, folder ownership, agent responsibilities, version snapshots, and project evolution over time.
 
-> Tip: Many popular extensions utilize animations. This is an excellent way to show off your extension! We recommend short, focused animations that are easy to follow.
-
-## Requirements
-
-If you have any requirements or dependencies, add a section describing those and how to install and configure them.
-
-## Extension Settings
-
-Include if your extension adds any VS Code settings through the `contributes.configuration` extension point.
-
-For example:
-
-This extension contributes the following settings:
-
-* `myExtension.enable`: Enable/disable this extension.
-* `myExtension.thing`: Set to `blah` to do something.
-
-## Known Issues
-
-Calling out known issues can help limit users opening duplicate issues against your extension.
-
-## Release Notes
-
-Users appreciate release notes as you update your extension.
-
-### 1.0.0
-
-Initial release of ...
-
-### 1.0.1
-
-Fixed issue #.
-
-### 1.1.0
-
-Added features X, Y, and Z.
+It acts like a persistent intelligence layer for the codebase — allowing AI agents to work with precision, reduced token usage, stronger reasoning, and better long-term understanding of the project.
 
 ---
 
-## Following extension guidelines
+## Current Capabilities
 
-Ensure that you've read through the extensions guidelines and follow the best practices for creating your extension.
+### Project Initialization
 
-* [Extension Guidelines](https://code.visualstudio.com/api/references/extension-guidelines)
+Initializes a `.contextforge` workspace inside the project root and creates the foundational project structure for versioned context management.
 
-## Working with Markdown
+This includes:
 
-You can author your README using Visual Studio Code. Here are some useful editor keyboard shortcuts:
+- Active version tracking
+- Project metadata
+- Architecture memory
+- Agent mapping support
+- Version-based project snapshots
 
-* Split the editor (`Cmd+\` on macOS or `Ctrl+\` on Windows and Linux).
-* Toggle preview (`Shift+Cmd+V` on macOS or `Shift+Ctrl+V` on Windows and Linux).
-* Press `Ctrl+Space` (Windows, Linux, macOS) to see a list of Markdown snippets.
+---
 
-## For more information
+### File Creation
 
-* [Visual Studio Code's Markdown Support](http://code.visualstudio.com/docs/languages/markdown)
-* [Markdown Syntax Reference](https://help.github.com/articles/markdown-basics/)
+Allows users to create tracked files inside the active project version.
 
-**Enjoy!**
+Instead of loose file generation, files are created under the currently active Context-Forge version so the system can maintain structured historical understanding of project evolution.
+
+This helps preserve:
+
+- Feature progression
+- Implementation history
+- Design intent
+- AI-readable development context
+
+---
+
+### Folder Creation + Agent Linking
+
+Allows users to create folders and directly assign them to specific agents.
+
+Each folder can be mapped to an existing agent or a newly created one, helping establish clear ownership boundaries inside the codebase.
+
+This enables:
+
+- Backend agent ownership
+- Frontend agent ownership
+- Infra/DevOps agent ownership
+- Testing agent ownership
+- Domain-based folder intelligence
+
+This makes AI agents work with responsibility-aware architecture instead of blind repository access.
+
+---
+
+### Agent Management Foundation
+
+Stores and manages reusable agents for the project.
+
+Agents represent specialized responsibilities inside the codebase rather than generic assistants.
+
+Examples:
+
+- backend-agent
+- frontend-agent
+- database-agent
+- deployment-agent
+- security-agent
+
+This creates a scalable multi-agent engineering workflow inside VS Code.
+
+---
+
+### Version-Based Project Memory
+
+Every important action is tied to a project version (`v1`, `v2`, `v3`...).
+
+This allows future support for:
+
+- Architectural rollback
+- Project evolution tracking
+- Decision history
+- Version-aware agent execution
+- Snapshot-based reasoning
+
+Instead of treating code as static, Context-Forge treats software development as an evolving system.
+
+---
+
+## Goal
+
+The long-term goal of Context-Forge is to transform VS Code from a simple editor into an AI-native engineering environment where agents understand structure, ownership, reasoning, and history before making changes.
+
+The objective is not autocomplete.
+
+The objective is engineering intelligence.
