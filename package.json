@@ -19,9 +19,17 @@
         "title": "Hello World"
       },
       {
-  "command": "cf.initCF",
-  "title": "ContextForge: Init CF"
-}
+        "command": "cf.initCF",
+        "title": "ContextForge: Init CF"
+      },
+      {
+        "command": "cf.createFolder",
+        "title": "ContextForge: Create Folder"
+      },
+      {
+        "command": "cf.createFile",
+        "title": "ContextForge: Create File"
+      }
     ]
   },
   "scripts": {

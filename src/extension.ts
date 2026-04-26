@@ -104,7 +104,7 @@ if (!selectedAgent) {
   vscode.window.showInformationMessage("Folder creation cancelled.");
   return;
 }
-    let agentName = selectedAgent.label || "";
+    let agentName = (selectedAgent as any).label || "";
     if (agentName === "Create New Agent") {
       agentName = await vscode.window.showInputBox({
         prompt: "Enter new agent name",
@@ -144,6 +144,9 @@ if (!selectedAgent) {
        }) => a.agentName === agentName);
       if (agent) {
         agent.folders = agent.folders || [];
+        if (!agent.folders.includes(folderName)) {
+          agent.folders.push(folderName);
+        }
       }
     }
     await vscode.workspace.fs.writeFile(
@@ -160,41 +163,41 @@ if (!selectedAgent) {
 
 
 
-  const createFile=vscode.commands.registerCommand("cf.createFile", async () => {
-    const workspace = vscode.workspace.workspaceFolders?.[0];
+  // const createFile=vscode.commands.registerCommand("cf.createFile", async () => {
+  //   const workspace = vscode.workspace.workspaceFolders?.[0];
     
-    if (!workspace) {
-      vscode.window.showErrorMessage("Couldnt find workspace.");
-      return;
-    }
-    const fileName = await vscode.window.showInputBox({ 
-      prompt: "Enter file name only no extension" ,
-      placeHolder: "e.g. main",
-      validateInput: (value) => {
-        if (!value || value.trim() === "") {
-          return "File name cannot be empty.";
-        }
-        if (/[<>:"/\\|?*]/.test(value)) {
-        return "File name contains invalid characters.";
-      }
-        return null;
-      }
-    });
-    if (!fileName) {
-      vscode.window.showErrorMessage("File creation cancelled. No file name provided.");
-      return;
-    }
-    const root = workspace.uri;
-    const cfFolder = vscode.Uri.joinPath(root, ".contextforge");
-    const currentUri = vscode.Uri.joinPath(cfFolder, "current.json");
-    const currentData = await vscode.workspace.fs.readFile(currentUri);
-    const current = JSON.parse(currentData.toString());
-    const newFileUri = vscode.Uri.joinPath(cfFolder, `${current.activeVersion}`, `${fileName}.json`);
-    await vscode.workspace.fs.writeFile(newFileUri, Buffer.from(""));
-    outputChannel.appendLine(`Created file: ${newFileUri.fsPath}`);    
-  });
+  //   if (!workspace) {
+  //     vscode.window.showErrorMessage("Couldnt find workspace.");
+  //     return;
+  //   }
+  //   const fileName = await vscode.window.showInputBox({ 
+  //     prompt: "Enter file name only no extension" ,
+  //     placeHolder: "e.g. main",
+  //     validateInput: (value) => {
+  //       if (!value || value.trim() === "") {
+  //         return "File name cannot be empty.";
+  //       }
+  //       if (/[<>:"/\\|?*]/.test(value)) {
+  //       return "File name contains invalid characters.";
+  //     }
+  //       return null;
+  //     }
+  //   });
+  //   if (!fileName) {
+  //     vscode.window.showErrorMessage("File creation cancelled. No file name provided.");
+  //     return;
+  //   }
+  //   const root = workspace.uri;
+  //   const cfFolder = vscode.Uri.joinPath(root, ".contextforge");
+  //   const currentUri = vscode.Uri.joinPath(cfFolder, "current.json");
+  //   const currentData = await vscode.workspace.fs.readFile(currentUri);
+  //   const current = JSON.parse(currentData.toString());
+  //   const newFileUri = vscode.Uri.joinPath(cfFolder, `${current.activeVersion}`, `${fileName}.json`);
+  //   await vscode.workspace.fs.writeFile(newFileUri, Buffer.from(""));
+  //   outputChannel.appendLine(`Created file: ${newFileUri.fsPath}`);    
+  // });
   context.subscriptions.push(initCF);
-  context.subscriptions.push(createFile);
+  // context.subscriptions.push(createFile);
   context.subscriptions.push(createFolder);
 }
 
