@@ -48,9 +48,6 @@ const initCF = vscode.commands.registerCommand("cf.initCF", async () => {
     const currentConfig: CurrentConfig = {
       activeVersion: "v1",
       latestVersion: 1,
-
-      // Keep these only if your CurrentConfig type has them.
-      // If your type only has activeVersion and latestVersion, remove these 2 lines.
       projectRoot: workspace.uri.fsPath,
       lastUpdatedAt: now,
     };

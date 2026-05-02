@@ -75,15 +75,26 @@ export function createAgentConfigTemplate(
 
 export function createFunctionSignatureTemplate(
     functionName:string,
-    type:"function" | "method" | "arrow-function" | "class-method" | "constructor"
+    linestart:number,
+    lineend:number,
+    type:"function" | "method" | "arrow-function" | "class-method" | "constructor",
+    parameters:{
+        name: string;
+        type: string;
+        optional?: boolean;
+        description?: string;
+    }[],
+    description:string
 ):FunctionSignature{
     return{
         functionName,
         type: type,
         signature: "",
-        parameters: [],
+        linestart:linestart,
+        lineend:lineend,
+        parameters: parameters,
         returnType: "",
-        description: "",
+        description: description,
         lastUpdatedAt: new Date().toISOString()
     };
 }

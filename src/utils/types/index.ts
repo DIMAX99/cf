@@ -95,7 +95,8 @@ export interface FunctionSignature {
     optional?: boolean;
     description?: string;
   }[];
-
+  linestart?: number;
+  lineend?: number;
   returnType: string;
 
   description: string;
