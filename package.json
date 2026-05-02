@@ -29,6 +29,10 @@
       {
         "command": "cf.createFile",
         "title": "ContextForge: Create File"
+      },
+      {
+        "command": "cf.createAgent",
+        "title": "ContextForge: Create Agent"
       }
     ]
   },
