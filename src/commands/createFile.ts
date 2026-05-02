@@ -117,7 +117,6 @@ const createFile = vscode.commands.registerCommand("cf.createFile", async () => 
         folderContext.files = [];
       }
 
-      // Only add if not already tracked
       const alreadyTracked = folderContext.files.some((f) => f.fileName === fileName);
       if (!alreadyTracked) {
         folderContext.files.push({
@@ -140,6 +139,49 @@ const createFile = vscode.commands.registerCommand("cf.createFile", async () => 
         `⚠ Warning: _folder.context.json not found in temp/${selectedFolder.folderName}. ` +
         `Run 'ContextForge: Create Folder' to initialize it.`
       );
+    }
+
+    // 4. Update agent's files[] in temp/agents/{agentName}.json
+    const agentFileUri = vscode.Uri.joinPath(
+      cfRoot, "temp", "agents", `${selectedFolder.agentName}.json`
+    );
+    const agentFileExists = await FileSystemService.exists(agentFileUri);
+
+    if (agentFileExists) {
+      const agentData = await FileSystemService.readJSON<any>(agentFileUri);
+
+      if (!agentData.files) {
+        agentData.files = [];
+      }
+
+      const alreadyInAgent = agentData.files.some((f: string) => f === realFileUri.fsPath);
+      if (!alreadyInAgent) {
+        agentData.files.push(realFileUri.fsPath);
+      }
+
+      agentData.updatedAt = new Date().toISOString();
+      await FileSystemService.writeJSON(agentFileUri, agentData);
+      outputChannel.appendLine(`✓ Updated agent "${selectedFolder.agentName}" files list`);
+    } else {
+      outputChannel.appendLine(
+        `⚠ Warning: Agent file not found for "${selectedFolder.agentName}". ` +
+        `Create the agent first using 'ContextForge: Create Agent'.`
+      );
+    }
+
+    // 5. Update files[] in temp/global.json folderAgents entry
+    const agent = globalConfig.folderAgents.find(
+      (a) => a.agentName === selectedFolder.agentName
+    );
+    if (agent) {
+      if (!agent.files) {
+        agent.files = [];
+      }
+      if (!agent.files.includes(realFileUri.fsPath)) {
+        agent.files.push(realFileUri.fsPath);
+      }
+      await CFStateManager.updateGlobal({ folderAgents: globalConfig.folderAgents });
+      outputChannel.appendLine(`✓ Updated temp/global.json agent files list`);
     }
 
     CFStateManager.invalidateCache();
