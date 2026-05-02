@@ -34,7 +34,24 @@
         "command": "cf.createAgent",
         "title": "ContextForge: Create Agent"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "ContextForge",
+      "properties": {
+        "contextforge.backendUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Backend server URL for ContextForge API (e.g., http://localhost:3000)"
+        },
+        "contextforge.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "API key for authenticating with the ContextForge backend",
+          "markdownDescription": "API key for authenticating with the ContextForge backend. Keep this secret!",
+          "editPresentation": "password"
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run package",

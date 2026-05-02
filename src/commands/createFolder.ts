@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import { createFolderContextTemplate, createAgentConfigTemplate } from "../utils/templates";
 import { CFStateManager } from "../core/CFStateManager";
 import { FileSystemService } from "../services/FileSystemService";
-import { GlobalConfig } from "../utils/types";
+import { GlobalConfig, AgentConfig } from "../utils/types";
 
 const createFolder = vscode.commands.registerCommand("cf.createFolder", async () => {
   const outputChannel = vscode.window.createOutputChannel("context-forge");
@@ -109,12 +109,32 @@ const createFolder = vscode.commands.registerCommand("cf.createFolder", async ()
         return;
       }
 
-      // Build new agent and add to temp/global.json
+      // Build new agent and write to temp/agents/{agentName}.json FIRST
       const newAgent = createAgentConfigTemplate(agentName, "Folder Agent");
       agentId = newAgent.agentId;
       newAgent.description = desc;
       newAgent.folders = [folderName];
 
+      // Write agent to temp/agents/{agentName}.json with extended properties
+      const agentsFolder = vscode.Uri.joinPath(cfRoot, "temp", "agents");
+      try {
+        await FileSystemService.ensureDirectory(agentsFolder);
+      } catch {
+        // Directory might already exist
+      }
+      const agentFilePath = vscode.Uri.joinPath(cfRoot, "temp", "agents", `${agentName}.json`);
+      const agentFileData = {
+        ...newAgent,
+        canRead: [realFolderUri.fsPath],
+        canWrite: [realFolderUri.fsPath],
+        responsibilities: [],
+        techScope: [],
+        provides: []
+      };
+      await FileSystemService.writeJSON(agentFilePath, agentFileData);
+      outputChannel.appendLine(`✓ Wrote agent definition to agents/${agentName}.json`);
+
+      // Now add to temp/global.json
       tempGlobal.folderAgents = tempGlobal.folderAgents || [];
       tempGlobal.folderAgents.push(newAgent);
 
@@ -128,6 +148,41 @@ const createFolder = vscode.commands.registerCommand("cf.createFolder", async ()
         if (!agent.folders.includes(folderName)) {
           agent.folders.push(folderName);
         }
+
+        // Read existing agent from temp/agents/{agentName}.json and update it
+        const agentFilePath = vscode.Uri.joinPath(cfRoot, "temp", "agents", `${agentName}.json`);
+        const agentFileExists = await FileSystemService.exists(agentFilePath);
+        
+        if (agentFileExists) {
+          const existingAgent = await FileSystemService.readJSON<any>(agentFilePath);
+          
+          // Add folder path to canRead[] and canWrite[]
+          if (!existingAgent.canRead) {
+            existingAgent.canRead = [];
+          }
+          if (!existingAgent.canWrite) {
+            existingAgent.canWrite = [];
+          }
+          
+          if (!existingAgent.canRead.includes(realFolderUri.fsPath)) {
+            existingAgent.canRead.push(realFolderUri.fsPath);
+          }
+          if (!existingAgent.canWrite.includes(realFolderUri.fsPath)) {
+            existingAgent.canWrite.push(realFolderUri.fsPath);
+          }
+          
+          // Update folders list in agent file
+          if (!existingAgent.folders.includes(folderName)) {
+            existingAgent.folders.push(folderName);
+          }
+          
+          existingAgent.updatedAt = new Date().toISOString();
+          
+          // Write updated agent back
+          await FileSystemService.writeJSON(agentFilePath, existingAgent);
+          outputChannel.appendLine(`✓ Updated agents/${agentName}.json with folder access`);
+        }
+
         outputChannel.appendLine(`✓ Linked folder "${folderName}" to agent: ${agentName}`);
       } else {
         vscode.window.showErrorMessage(`Agent "${agentName}" not found.`);
