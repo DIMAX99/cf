@@ -1,13 +1,22 @@
 import * as vscode from "vscode";
+import { createFolderContextTemplate, createAgentConfigTemplate } from "../utils/templates";
+import { CFStateManager } from "../core/CFStateManager";
+import { FileSystemService } from "../services/FileSystemService";
+import { GlobalConfig } from "../utils/types";
 
-const createFolder=vscode.commands.registerCommand("cf.createFolder", async () => {
+const createFolder = vscode.commands.registerCommand("cf.createFolder", async () => {
+  const outputChannel = vscode.window.createOutputChannel("context-forge");
+
+  try {
+    await CFStateManager.guardInitialized();
+
     const workspace = vscode.workspace.workspaceFolders?.[0];
-    const outputChannel = vscode.window.createOutputChannel("context-forge");
-    
     if (!workspace) {
-      vscode.window.showErrorMessage("Couldnt find workspace.");
+      vscode.window.showErrorMessage("No workspace folder found.");
       return;
     }
+
+    // 1. Prompt for folder name
     const folderName = await vscode.window.showInputBox({
       prompt: "Enter folder name",
       placeHolder: "e.g. src",
@@ -21,39 +30,53 @@ const createFolder=vscode.commands.registerCommand("cf.createFolder", async () =
         return null;
       }
     });
+
     if (!folderName) {
-      vscode.window.showErrorMessage("Folder creation cancelled. No folder name provided.");
+      vscode.window.showInformationMessage("Folder creation cancelled.");
       return;
     }
-    const root = workspace.uri;
-    const cfFolder = vscode.Uri.joinPath(root, ".contextforge");
-    const currentUri = vscode.Uri.joinPath(cfFolder, "current.json");
-    const currentData = await vscode.workspace.fs.readFile(currentUri);
-    const current = JSON.parse(currentData.toString());
-    const versionFolderUri = vscode.Uri.joinPath(cfFolder, `${current.activeVersion}`);
-    const globalData = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(versionFolderUri, "global.json"));
-    const global = JSON.parse(globalData.toString());
-    const agentOptions = global.folderAgents?.map((agent: { agentName: string; folders: string[] ,desc: string}) => ({
-      label: agent.agentName,
-      description: `Folders: ${agent.folders?.join(", ") || "None"} \n Description:\n ${agent.desc || ""}`
-    })) || [];
-    agentOptions.push({
-  label: "Create New Agent",
-  description: "Create and link a new agent"
-});
 
-const selectedAgent = await vscode.window.showQuickPick(agentOptions, {
-  placeHolder: "Select an agent for this folder"
-});
-if (!selectedAgent) {
-  vscode.window.showInformationMessage("Folder creation cancelled.");
-  return;
-}
-    let agentName = (selectedAgent as any).label || "";
+    // Check if real folder already exists
+    const realFolderUri = vscode.Uri.joinPath(workspace.uri, folderName);
+    const realFolderExists = await FileSystemService.exists(realFolderUri);
+    if (realFolderExists) {
+      vscode.window.showErrorMessage(`Folder "${folderName}" already exists in the workspace.`);
+      return;
+    }
+
+    // 2. Load temp/global.json (source of truth for temp changes)
+    const cfRoot = CFStateManager.getCFRoot();
+    const tempGlobalUri = vscode.Uri.joinPath(cfRoot, "temp", "global.json");
+    const tempGlobal = await FileSystemService.readJSON<GlobalConfig>(tempGlobalUri);
+
+    // 3. Build agent QuickPick from temp/global.json
+    const agentOptions = tempGlobal.folderAgents?.map((agent) => ({
+      label: agent.agentName,
+      description: `Folders: ${agent.folders?.join(", ") || "None"} | ${agent.description || ""}`
+    })) || [];
+
+    agentOptions.push({
+      label: "Create New Agent",
+      description: "Create and link a new agent"
+    });
+
+    const selectedAgent = await vscode.window.showQuickPick(agentOptions, {
+      placeHolder: "Select an agent for this folder"
+    });
+
+    if (!selectedAgent) {
+      vscode.window.showInformationMessage("Folder creation cancelled.");
+      return;
+    }
+
+    let agentName = selectedAgent.label;
+    let agentId = "";
+
+    // 4. Handle new agent or existing agent
     if (agentName === "Create New Agent") {
       agentName = await vscode.window.showInputBox({
         prompt: "Enter new agent name",
-        placeHolder: "e.g. AuthAgent , ComponentAgent",
+        placeHolder: "e.g. AuthAgent, ComponentAgent",
         validateInput: (value) => {
           if (!value || value.trim() === "") {
             return "Agent name cannot be empty.";
@@ -64,11 +87,13 @@ if (!selectedAgent) {
           return null;
         }
       }) || "";
+
       if (!agentName) {
         vscode.window.showInformationMessage("Folder creation cancelled. No agent name provided.");
         return;
       }
-      const desc=await vscode.window.showInputBox({
+
+      const desc = await vscode.window.showInputBox({
         prompt: "Enter agent description",
         placeHolder: "e.g. Responsible for handling authentication related tasks",
         validateInput: (value) => {
@@ -78,29 +103,74 @@ if (!selectedAgent) {
           return null;
         }
       }) || "";
+
       if (!desc) {
         vscode.window.showInformationMessage("Folder creation cancelled. No agent description provided.");
         return;
       }
-      global.folderAgents = global.folderAgents || [];
-      global.folderAgents.push({ agentName, folders: [folderName], desc });
+
+      // Build new agent and add to temp/global.json
+      const newAgent = createAgentConfigTemplate(agentName, "Folder Agent");
+      agentId = newAgent.agentId;
+      newAgent.description = desc;
+      newAgent.folders = [folderName];
+
+      tempGlobal.folderAgents = tempGlobal.folderAgents || [];
+      tempGlobal.folderAgents.push(newAgent);
+
+      outputChannel.appendLine(`✓ Created new agent: ${agentName} (ID: ${agentId})`);
     } else {
-      const agent = global.folderAgents.find((a: { agentName: string; folders: string[]; desc: string
-       }) => a.agentName === agentName);
+      // Link existing agent to this folder
+      const agent = tempGlobal.folderAgents.find((a) => a.agentName === agentName);
       if (agent) {
+        agentId = agent.agentId;
         agent.folders = agent.folders || [];
         if (!agent.folders.includes(folderName)) {
           agent.folders.push(folderName);
         }
+        outputChannel.appendLine(`✓ Linked folder "${folderName}" to agent: ${agentName}`);
+      } else {
+        vscode.window.showErrorMessage(`Agent "${agentName}" not found.`);
+        return;
       }
     }
-    await vscode.workspace.fs.writeFile(
-      vscode.Uri.joinPath(versionFolderUri, "global.json"),
-      Buffer.from(JSON.stringify(global, null, 2))
+
+    // 5. Create the REAL folder in workspace
+    await FileSystemService.ensureDirectory(realFolderUri);
+    outputChannel.appendLine(`✓ Created real folder: ${realFolderUri.fsPath}`);
+
+    // 6. Create context folder in .contextforge/temp/{folderName}/
+    const tempFolderUri = vscode.Uri.joinPath(cfRoot, "temp", folderName);
+    await FileSystemService.ensureDirectory(tempFolderUri);
+    outputChannel.appendLine(`✓ Created temp context folder: ${tempFolderUri.fsPath}`);
+
+    // 7. Write _folder.context.json to .contextforge/temp/{folderName}/
+    const folderContext = createFolderContextTemplate(folderName, agentName, agentId);
+    folderContext.folderPath = realFolderUri.fsPath; // points to REAL workspace folder
+
+    const folderContextUri = vscode.Uri.joinPath(tempFolderUri, "_folder.context.json");
+    await FileSystemService.writeJSON(folderContextUri, folderContext);
+    outputChannel.appendLine(`✓ Created _folder.context.json in temp/${folderName}`);
+
+    // 8. Write updated temp/global.json
+    tempGlobal.updatedAt = new Date().toISOString();
+    await FileSystemService.writeJSON(tempGlobalUri, tempGlobal);
+    outputChannel.appendLine(`✓ Updated temp/global.json`);
+
+    CFStateManager.invalidateCache();
+
+    outputChannel.appendLine(`\n✓ Done! Created folder "${folderName}" linked to agent "${agentName}".`);
+    outputChannel.show(true);
+
+    vscode.window.showInformationMessage(
+      `ContextForge: Created folder "${folderName}" linked to agent "${agentName}".`
     );
-    const newFolderUri = vscode.Uri.joinPath(cfFolder, `${current.activeVersion}`, folderName);
-    await vscode.workspace.fs.createDirectory(newFolderUri);
-    outputChannel.appendLine(`Created folder: ${newFolderUri.fsPath}`);
-  });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    vscode.window.showErrorMessage(`Failed to create folder: ${errorMessage}`);
+    outputChannel.appendLine(`✗ Error: ${errorMessage}`);
+    outputChannel.show(true);
+  }
+});
 
 export { createFolder };

@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { initCF } from "./commands/initCF";
 import { createFolder } from "./commands/createFolder";
+import { createFile } from "./commands/createFile";
 
 export function activate(context: vscode.ExtensionContext) {
   const outputChannel = vscode.window.createOutputChannel("context-forge");
@@ -8,6 +9,7 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(outputChannel);
   context.subscriptions.push(initCF);
   context.subscriptions.push(createFolder);
+  context.subscriptions.push(createFile);
 }
 
 export function deactivate() {}
