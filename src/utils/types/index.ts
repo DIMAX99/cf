@@ -166,4 +166,10 @@ export interface ChangelogEntry {
   agentName?: string;
 
   timestamp: string;
+
+  addedFiles: string[];
+  modifiedFiles: string[];
+  deletedFiles: string[];
+  newFunctions: string[];
+  changedFunctions: string[];
 }
