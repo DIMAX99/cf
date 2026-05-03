@@ -36,8 +36,8 @@ class FunctionSignature(BaseModel):
     type: Literal["function", "method", "arrow-function", "class-method", "constructor"]
     signature: str
     parameters: List[Dict[str, Any]]
-    linestart: Optional[int] = None
-    lineend: Optional[int] = None
+    line_start: Optional[int] = None
+    line_end: Optional[int] = None
     return_type: str
     description: str
     start_line: Optional[int] = None
