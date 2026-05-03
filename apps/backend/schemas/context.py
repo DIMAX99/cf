@@ -1,13 +1,14 @@
 from typing import List, Optional, Literal, Dict, Any
-from pydantic import BaseModel
-
+from pydantic import BaseModel, ConfigDict
+from pydantic.alias_generators import to_camel
 
 class CurrentConfig(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+    
     active_version: str
     latest_version: int
     project_root: str
     last_updated_at: str
-
 
 class AgentConfig(BaseModel):
     agent_id: str
