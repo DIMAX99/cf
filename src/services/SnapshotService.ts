@@ -199,11 +199,13 @@ export class SnapshotService {
    * @returns Diff object with added, removed, modified, and unchanged files
    */
   static compareSnapshots(
-    previousSnapshot: SnapshotFile[],
-    currentSnapshot: SnapshotFile[]
+    previousSnapshot: SnapshotFile[] | [],
+    currentSnapshot: SnapshotFile[] | []
   ): SnapshotDiff {
-    const previousMap = new Map(previousSnapshot.map((f) => [f.path, f]));
-    const currentMap = new Map(currentSnapshot.map((f) => [f.path, f]));
+    const safePrev = Array.isArray(previousSnapshot) ? previousSnapshot : [];
+    const safeCurr = Array.isArray(currentSnapshot) ? currentSnapshot : [];
+    const previousMap = new Map(safePrev.map((f) => [f.path, f]));
+    const currentMap = new Map(safeCurr.map((f) => [f.path, f]));
 
     const added: SnapshotFile[] = [];
     const removed: SnapshotFile[] = [];

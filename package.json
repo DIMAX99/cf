@@ -48,12 +48,12 @@
       "properties": {
         "contextforge.backendUrl": {
           "type": "string",
-          "default": "",
+          "default": "http://localhost:3000",
           "description": "Backend server URL for ContextForge API (e.g., http://localhost:3000)"
         },
         "contextforge.apiKey": {
           "type": "string",
-          "default": "",
+          "default": "EWvril6fTbdIJNaVcvgraOK8bT3qBgJ7",
           "description": "API key for authenticating with the ContextForge backend",
           "markdownDescription": "API key for authenticating with the ContextForge backend. Keep this secret!",
           "editPresentation": "password"

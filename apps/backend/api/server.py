@@ -1,8 +1,10 @@
 import asyncio
 import os
 import uuid
+import logging
 from typing import Optional, Dict, Any, Literal, List
-from fastapi import FastAPI, Depends, HTTPException, Security, WebSocket, WebSocketDisconnect, BackgroundTasks
+from collections import defaultdict
+from fastapi import FastAPI, Depends, HTTPException, Security, WebSocket, WebSocketDisconnect, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -17,11 +19,15 @@ from memory.context_writer import (
     copy_temp_to_version
 )
 from schemas.context import FileContext, FolderContext, AgentConfig
+from agents.save_coordinator import run_save_coordinator
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 # --- Configuration & Security ---
 # In production, set this via environment variables. For local VS Code dev, a static key is fine.
-EXPECTED_API_KEY = os.getenv("CF_API_KEY", "cf-dev-key-123")
-API_KEY_NAME = "x-api-key"
+EXPECTED_API_KEY = os.getenv("CF_API_KEY", "EWvril6fTbdIJNaVcvgraOK8bT3qBgJ7")
+API_KEY_NAME = "X-API-Key"
 
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
@@ -53,11 +59,20 @@ class TaskCreateRequest(APIBaseModel):
     goal: str
     target_agent: Optional[str] = None
 
+
+class SaveChangesPayload(BaseModel):
+    """Payload for save changes request from frontend"""
+    type: str  # "save_changes"
+    version: str
+    previousVersion: str
+    changes: Dict[str, Any]  # {added[], removed[], modified[]}
+    files: list  # [{path, content, language, size}]
+
 # --- In-Memory Task Database ---
-# Maps task_id -> {"status": "pending|running|completed|failed", "result": None, "logs": []}
+# Maps task_id -> {"status": "pending|running|completed|failed", "result": None, "logs": [], "error": None}
 tasks_db: Dict[str, Dict[str, Any]] = {}
-# Maps task_id -> List of active WebSocket connections
-task_subscribers: Dict[str, List[WebSocket]] = {}
+# Maps task_id -> List of asyncio queues for WebSocket subscribers
+task_subscribers: Dict[str, List[asyncio.Queue]] = {}
 
 # --- App Initialization ---
 app = FastAPI(title="Context-Forge Backend")
@@ -128,48 +143,126 @@ async def update_context(req: UpdateContextRequest):
 
 # --- Task Coordinator Mock ---
 
-async def run_task_coordinator(task_id: str, goal: str):
-    """Background runner that simulates the AI Agent Coordinator."""
-    tasks_db[task_id]["status"] = "running"
+# --- Task Coordinator ---
+
+async def run_save_task(task_id: str, payload: SaveChangesPayload):
+    """Background runner that executes the save coordinator workflow"""
     
-    # Helper to broadcast to all connected WebSockets
-    async def broadcast(message: str):
-        tasks_db[task_id]["logs"].append(message)
+    def broadcast_message(step: str, message: str, status: str = "progress"):
+        """Add message to task logs"""
+        log_entry = {
+            "step": step,
+            "message": message,
+            "status": status,
+        }
+        tasks_db[task_id]["logs"].append(log_entry)
+        logger.info(f"[{task_id}] {step}: {message}")
+        
+        # Broadcast to WebSocket subscribers
         subs = task_subscribers.get(task_id, [])
-        for ws in subs:
+        for ws_queue in subs:
             try:
-                await ws.send_json({"taskId": task_id, "status": tasks_db[task_id]["status"], "log": message})
-            except Exception:
-                pass # Client disconnected
+                ws_queue.put_nowait(log_entry)
+            except:
+                pass  # Queue full or closed
+    
+    try:
+        tasks_db[task_id]["status"] = "running"
+        broadcast_message("init", "Starting save operation")
+        
+        # Build diff from payload
+        diff = {
+            "added": payload.changes.get("added", []),
+            "removed": payload.changes.get("removed", []),
+            "modified": payload.changes.get("modified", []),
+        }
+        
+        # Build file contents dict
+        file_contents = {}
+        for file_obj in payload.files:
+            file_contents[file_obj["path"]] = file_obj["content"]
+        
+        broadcast_message("setup", f"Prepared {len(file_contents)} files")
+        
+        # Get CF root from environment or use default
+        cf_root = os.getenv("CF_ROOT", ".contextforge")
+        
+        # Run save coordinator
+        logger.info(f"Starting save_coordinator for task {task_id}")
+        broadcast_message("coordinator", "Running save coordinator")
+        
+        result = await run_save_coordinator(
+            cf_root=cf_root,
+            version=payload.version,
+            previous_version=payload.previousVersion,
+            diff=diff,
+            changed_file_contents=file_contents,
+        )
+        
+        # Store result
+        tasks_db[task_id]["result"] = result.get("summary")
+        tasks_db[task_id]["status"] = result.get("status", "completed")
+        
+        if result.get("errors"):
+            broadcast_message(
+                "summary",
+                f"Completed with {len(result['errors'])} errors",
+                "warning"
+            )
+        else:
+            broadcast_message(
+                "summary",
+                f"✨ Successfully saved {payload.version}",
+                "success"
+            )
+        
+        logger.info(f"Task {task_id} completed with status: {tasks_db[task_id]['status']}")
+    
+    except Exception as e:
+        logger.error(f"Task {task_id} failed: {str(e)}", exc_info=True)
+        tasks_db[task_id]["status"] = "failed"
+        tasks_db[task_id]["error"] = str(e)
+        broadcast_message("error", str(e), "error")
 
-    await broadcast(f"Starting analysis for goal: {goal}")
-    await asyncio.sleep(1) # Simulate LLM thinking
-    
-    await broadcast("Loaded context for target files.")
-    await asyncio.sleep(2) # Simulate writing/editing
-    
-    await broadcast("Applying changes to workspace.")
-    
-    tasks_db[task_id]["status"] = "completed"
-    tasks_db[task_id]["result"] = {"files_changed": 2, "summary": "Task finished successfully."}
-    await broadcast("Task completed.")
 
-
-@app.post("/tasks", dependencies=[Depends(verify_api_key)])
-async def create_task(req: TaskCreateRequest, background_tasks: BackgroundTasks):
-    """Creates a task and kicks off the coordinator in the background."""
-    task_id = f"task_{uuid.uuid4().hex[:8]}"
+@app.post("/tasks")
+async def create_task(payload: SaveChangesPayload):
+    """
+    Create a new save task
     
-    tasks_db[task_id] = {
-        "status": "pending",
-        "result": None,
-        "logs": ["Task created."]
+    Expected payload:
+    {
+      "type": "save_changes",
+      "version": "v2",
+      "previousVersion": "v1",
+      "changes": {"added": [...], "removed": [...], "modified": [...]},
+      "files": [{"path": "...", "content": "...", "language": "...", "size": ...}]
     }
+    """
+    try:
+        logger.info(f"Received save_changes request: {payload.version}")
+        
+        # Create task
+        task_id = f"task_{uuid.uuid4().hex[:12]}"
+        tasks_db[task_id] = {
+            "status": "pending",
+            "result": None,
+            "logs": [],
+            "error": None
+        }
+        task_subscribers[task_id] = []
+        
+        # Start background task
+        asyncio.create_task(run_save_task(task_id, payload))
+        
+        return {
+            "taskId": task_id,
+            "status": "pending"
+        }
     
-    # Run the AI logic in the background so the API responds immediately
-    background_tasks.add_task(run_task_coordinator, task_id, req.goal)
-    
-    return {"taskId": task_id, "status": "pending"}
+    except Exception as e:
+        logger.error(f"Error creating task: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/tasks/{task_id}", dependencies=[Depends(verify_api_key)])
@@ -180,38 +273,62 @@ async def get_task(task_id: str):
     return tasks_db[task_id]
 
 
-@app.websocket("/tasks/{task_id}/stream")
-async def websocket_task_stream(websocket: WebSocket, task_id: str):
-    """Streams real-time updates from the running task coordinator."""
-    await websocket.accept()
+@app.websocket("/ws/tasks/{task_id}")
+async def websocket_task_stream(websocket: WebSocket, task_id: str, api_key: str = Query(...)):
+    """
+    WebSocket endpoint to stream task progress
     
-    # Basic WebSocket Auth: Expect the first message to be the API key
-    auth_msg = await websocket.receive_text()
-    if auth_msg != EXPECTED_API_KEY:
-        await websocket.close(code=1008, reason="Invalid API Key")
+    Client connects: ws://localhost:8000/ws/tasks/{taskId}?api_key={key}
+    Receives: {step, message, status} messages in real-time
+    """
+    # Verify API key
+    if api_key != EXPECTED_API_KEY:
+        await websocket.close(code=4001, reason="Unauthorized")
         return
-
+    
+    # Check task exists
     if task_id not in tasks_db:
-        await websocket.close(code=1008, reason="Task not found")
+        await websocket.close(code=4004, reason="Task not found")
         return
-
-    # Register subscriber
-    if task_id not in task_subscribers:
-        task_subscribers[task_id] = []
-    task_subscribers[task_id].append(websocket)
-
+    
     try:
-        # Catch them up on existing logs
-        for log in tasks_db[task_id]["logs"]:
-            await websocket.send_json({"taskId": task_id, "status": tasks_db[task_id]["status"], "log": log})
+        await websocket.accept()
+        logger.info(f"WebSocket connected for task {task_id}")
+        
+        # Send existing messages
+        for msg in tasks_db[task_id]["logs"]:
+            await websocket.send_json(msg)
+        
+        # Create message queue for this connection
+        message_queue: asyncio.Queue = asyncio.Queue()
+        task_subscribers[task_id].append(message_queue)
+        
+        try:
+            # Stream new messages as they arrive
+            while tasks_db[task_id]["status"] in ["pending", "running"]:
+                try:
+                    msg = message_queue.get_nowait()
+                    await websocket.send_json(msg)
+                except asyncio.QueueEmpty:
+                    await asyncio.sleep(0.1)
             
-        # Keep connection open until client disconnects or task finishes
-        while True:
-            # We use receive_text to block and keep the connection alive.
-            # If the client drops, this raises WebSocketDisconnect
-            data = await websocket.receive_text() 
-            if data == "ping":
-                await websocket.send_text("pong")
-                
+            # Send final status
+            await websocket.send_json({
+                "step": "completed",
+                "message": f"Task {tasks_db[task_id]['status']}",
+                "status": tasks_db[task_id]["status"],
+            })
+        
+        finally:
+            # Clean up subscription
+            if message_queue in task_subscribers[task_id]:
+                task_subscribers[task_id].remove(message_queue)
+    
     except WebSocketDisconnect:
-        task_subscribers[task_id].remove(websocket)
+        logger.info(f"WebSocket disconnected for task {task_id}")
+    except Exception as e:
+        logger.error(f"WebSocket error for task {task_id}: {str(e)}")
+        try:
+            await websocket.close(code=1011, reason=str(e))
+        except:
+            pass

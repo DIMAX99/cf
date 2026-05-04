@@ -45,6 +45,16 @@ export async function saveChanges(context: vscode.ExtensionContext) {
       outputChannel.appendLine(`   ⚠️  Error reading active snapshot: ${error}`);
     }
 
+    // Step 2.5: Capture current workspace state into temp snapshot
+    outputChannel.appendLine("\n📸 Scanning current workspace state...");
+    try {
+      const currentSnapshot = await SnapshotService.takeSnapshot();
+      await SnapshotService.writeSnapshot("temp", currentSnapshot);
+      outputChannel.appendLine(`   ✅ Captured ${currentSnapshot.length} files from workspace`);
+    } catch (error) {
+      outputChannel.appendLine(`   ⚠️  Error capturing workspace snapshot: ${error}`);
+    }
+
     // Step 3: Read temp snapshot (working changes)
     outputChannel.appendLine("\n📸 Reading temp snapshot (working changes)...");
     let tempSnapshot: SnapshotFile[] | null = null;
@@ -73,34 +83,51 @@ export async function saveChanges(context: vscode.ExtensionContext) {
         "   First version - all temp files will be added"
       );
       diff = {
-        added: tempSnapshot,
+        added: tempSnapshot || [],
         removed: [],
         modified: [],
         unchanged: [],
       };
     } else {
-      diff = DiffService.diffSnapshots(activeSnapshot, tempSnapshot);
+      diff = DiffService.diffSnapshots(activeSnapshot, tempSnapshot || []);
     }
+
+    // Validate diff structure
+    if (!diff || typeof diff !== 'object') {
+      outputChannel.appendLine("   ❌ Invalid diff structure returned");
+      vscode.window.showErrorMessage("Failed to compute file differences");
+      return;
+    }
+
+    // Ensure diff properties are arrays
+    diff.added = diff.added || [];
+    diff.removed = diff.removed || [];
+    diff.modified = diff.modified || [];
+    diff.unchanged = diff.unchanged || [];
 
     // Step 5: Show diff summary
     outputChannel.appendLine("\n📊 Change Summary:");
-    const stats = DiffService.getChangeStatistics(diff);
-    outputChannel.appendLine(
-      `   Files added: ${stats.summary.addedCount} (${stats.addedSizeFormatted})`
-    );
-    outputChannel.appendLine(
-      `   Files removed: ${stats.summary.removedCount} (${stats.removedSizeFormatted})`
-    );
-    outputChannel.appendLine(
-      `   Files modified: ${stats.summary.modifiedCount}`
-    );
-    outputChannel.appendLine(
-      `   Net change: ${stats.netChangeFormatted}`
-    );
+    try {
+      const stats = DiffService.getChangeStatistics(diff);
+      outputChannel.appendLine(
+        `   Files added: ${stats.summary.addedCount} (${stats.addedSizeFormatted})`
+      );
+      outputChannel.appendLine(
+        `   Files removed: ${stats.summary.removedCount} (${stats.removedSizeFormatted})`
+      );
+      outputChannel.appendLine(
+        `   Files modified: ${stats.summary.modifiedCount}`
+      );
+      outputChannel.appendLine(
+        `   Net change: ${stats.netChangeFormatted}`
+      );
+    } catch (error) {
+      outputChannel.appendLine(`   ⚠️  Error computing statistics: ${error}`);
+    }
 
-    if (diff.added.length > 0) {
+    if (Array.isArray(diff.added) && diff.added.length > 0) {
       outputChannel.appendLine("\n   Added files:");
-      diff.added.slice(0, 10).forEach((f) => {
+      diff.added.slice(0, 10).forEach((f: any) => {
         outputChannel.appendLine(`     + ${f.path}`);
       });
       if (diff.added.length > 10) {
@@ -108,9 +135,9 @@ export async function saveChanges(context: vscode.ExtensionContext) {
       }
     }
 
-    if (diff.removed.length > 0) {
+    if (Array.isArray(diff.removed) && diff.removed.length > 0) {
       outputChannel.appendLine("\n   Removed files:");
-      diff.removed.slice(0, 10).forEach((f) => {
+      diff.removed.slice(0, 10).forEach((f: any) => {
         outputChannel.appendLine(`     - ${f.path}`);
       });
       if (diff.removed.length > 10) {
@@ -118,10 +145,11 @@ export async function saveChanges(context: vscode.ExtensionContext) {
       }
     }
 
-    if (diff.modified.length > 0) {
+    if (Array.isArray(diff.modified) && diff.modified.length > 0) {
       outputChannel.appendLine("\n   Modified files:");
-      diff.modified.slice(0, 10).forEach((m) => {
-        outputChannel.appendLine(`     ~ ${m.file.path}`);
+      diff.modified.slice(0, 10).forEach((m: any) => {
+        const filePath = m.file?.path || m.path || "unknown";
+        outputChannel.appendLine(`     ~ ${filePath}`);
       });
       if (diff.modified.length > 10) {
         outputChannel.appendLine(`     ... and ${diff.modified.length - 10} more`);
@@ -131,7 +159,9 @@ export async function saveChanges(context: vscode.ExtensionContext) {
     // Step 6: Ask for confirmation
     outputChannel.appendLine("\n❓ Awaiting user confirmation...");
     const totalChanges =
-      diff.added.length + diff.removed.length + diff.modified.length;
+      (Array.isArray(diff.added) ? diff.added.length : 0) + 
+      (Array.isArray(diff.removed) ? diff.removed.length : 0) + 
+      (Array.isArray(diff.modified) ? diff.modified.length : 0);
     const confirmMessage = `Save as ${nextVersionName}? ${totalChanges} files changed`;
 
     const result = await vscode.window.showInformationMessage(
@@ -151,7 +181,7 @@ export async function saveChanges(context: vscode.ExtensionContext) {
     outputChannel.appendLine("\n📖 Reading content of changed files...");
     const changedFiles = [
       ...diff.added,
-      ...diff.modified.map((m) => m.file),
+      ...diff.modified.map((m: any) => m.file || m),
       ...diff.removed,
     ];
 
@@ -186,9 +216,9 @@ export async function saveChanges(context: vscode.ExtensionContext) {
         version: nextVersionName,
         previousVersion: activeVersion,
         changes: {
-          added: diff.added.map(f => f.path),
-          removed: diff.removed.map(f => f.path),
-          modified: diff.modified.map(m => m.file.path),
+          added: Array.isArray(diff.added) ? diff.added.map((f: any) => f.path || '').filter(Boolean) : [],
+          removed: Array.isArray(diff.removed) ? diff.removed.map((f: any) => f.path || '').filter(Boolean) : [],
+          modified: Array.isArray(diff.modified) ? diff.modified.map((m: any) => (m.file?.path || m.path || '')).filter(Boolean) : [],
         },
         files: filesWithContent?.map(f => ({
           path: f.path,
