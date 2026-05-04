@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
 import { minimatch } from "minimatch";
-import { SnapshotService, SnapshotFile, SnapshotDiff } from "./SnapShotService";
+import { SnapshotService, SnapshotFile, SnapshotDiff } from "./SnapshotService";
 import { FileSystemService } from "./FileSystemService";
 
 /**

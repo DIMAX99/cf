@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { CFStateManager } from "../core/CFStateManager";
-import { SnapshotService, SnapshotFile } from "../services/SnapShotService";
+import { SnapshotService, SnapshotFile } from "../services/SnapshotService";
 import { DiffService } from "../services/DiffService";
 import { FileSystemService } from "../services/FileSystemService";
 import { BackendService } from "../services/backendService";
