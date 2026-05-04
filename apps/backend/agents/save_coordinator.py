@@ -3,6 +3,7 @@ import logging
 import os
 import shutil
 import asyncio
+import base64
 from typing import TypedDict, Optional, List, Dict, Any
 from datetime import datetime
 from pathlib import Path
@@ -12,7 +13,7 @@ from pydantic import BaseModel
 
 from schemas.context import FileContext, FunctionSignature
 from agents.context_update_agent import run_context_update
-from memory.context_writer import write_file_context, write_snapshot_metadata
+from memory.context_writer import write_file_context
 
 logger = logging.getLogger(__name__)
 
@@ -162,40 +163,77 @@ async def run_context_updates(state: SaveCoordinatorState) -> SaveCoordinatorSta
 
 async def create_new_version(state: SaveCoordinatorState) -> SaveCoordinatorState:
     """
-    Node 3: Create new version directory and write updated contexts
-    Copies temp snapshot to new version and writes all FileContext objects
+    Node 3: Create new version with ONLY changed files + metadata
+    v2 contains: changed files (added/removed/modified) + global/ with contexts and snapshot
     """
-    logger.info(f"Creating new version {state['version']}")
+    logger.info(f"Creating new version {state['version']} with changed files only")
     
     try:
         cf_root = state["cf_root"]
         version = state["version"]
+        changed_file_contents = state["changed_file_contents"]
         updated_contexts = state["updated_contexts"]
+        diff = state["diff"]
         
         # Create version directory structure
         version_path = Path(cf_root) / version
-        code_dir = version_path / "code"
-        code_dir.mkdir(parents=True, exist_ok=True)
+        global_dir = version_path / "global"
+        global_dir.mkdir(parents=True, exist_ok=True)
         
-        # Copy snapshot from temp
+        # 1. Write ONLY changed files to v2
+        for file_path in changed_file_contents.keys():
+            try:
+                file_full_path = version_path / file_path
+                file_full_path.parent.mkdir(parents=True, exist_ok=True)
+                
+                # Write actual file content
+                with open(file_full_path, "w", encoding="utf-8") as f:
+                    f.write(changed_file_contents[file_path])
+                logger.info(f"Wrote changed file: {file_path}")
+            except Exception as e:
+                logger.error(f"Failed to write file {file_path}: {str(e)}")
+                state["errors"].append(f"Write file error for {file_path}: {str(e)}")
+        
+        # 2. Copy snapshot metadata to global/
         temp_snapshot = Path(cf_root) / "temp" / "snapshot.json"
-        version_snapshot = version_path / "snapshot.json"
+        version_snapshot = global_dir / "snapshot.json"
         if temp_snapshot.exists():
             shutil.copy2(temp_snapshot, version_snapshot)
-            logger.info(f"Copied snapshot to {version}")
+            logger.info(f"Copied snapshot to {version}/global/")
         
-        # Write all updated contexts
+        # 3. Write FileContext metadata for changed files to global/contexts/
+        contexts_dir = global_dir / "contexts"
+        contexts_dir.mkdir(parents=True, exist_ok=True)
+        
         for file_path, file_context in updated_contexts.items():
             try:
-                context_file = code_dir / f"{file_path}.json"
-                context_file.parent.mkdir(parents=True, exist_ok=True)
+                # Base64 encode the file path to avoid filesystem issues
+                encoded_path = base64.b64encode(file_path.encode()).decode()
+                context_file = contexts_dir / f"{encoded_path}.json"
                 
                 with open(context_file, "w") as f:
                     json.dump(file_context.model_dump(), f, indent=2, default=str)
-                logger.info(f"Wrote context for {file_path}")
+                logger.info(f"Wrote context metadata for {file_path}")
             except Exception as e:
                 logger.error(f"Failed to write context for {file_path}: {str(e)}")
                 state["errors"].append(f"Write context error for {file_path}: {str(e)}")
+        
+        # 4. Write diff summary to global/
+        try:
+            diff_summary = {
+                "added": diff.get("added", []),
+                "removed": diff.get("removed", []),
+                "modified": diff.get("modified", []),
+                "total_added": len(diff.get("added", [])),
+                "total_removed": len(diff.get("removed", [])),
+                "total_modified": len(diff.get("modified", [])),
+            }
+            diff_file = global_dir / "diff.json"
+            with open(diff_file, "w") as f:
+                json.dump(diff_summary, f, indent=2)
+            logger.info("Wrote diff summary to global/")
+        except Exception as e:
+            logger.error(f"Failed to write diff summary: {str(e)}")
         
         state["new_version_path"] = str(version_path)
         
@@ -246,35 +284,27 @@ async def update_current_json(state: SaveCoordinatorState) -> SaveCoordinatorSta
 
 async def sync_temp(state: SaveCoordinatorState) -> SaveCoordinatorState:
     """
-    Node 5: Reset temp/ to match new version for next session
-    This allows the temp workspace to start fresh from the committed version
+    Node 5: Clear temp/ to reset for next save cycle
+    temp starts empty, gets populated with changes, then cleared after save
     """
-    logger.info(f"Syncing temp/ to match {state['version']}")
+    logger.info(f"Clearing temp/ after saving {state['version']}")
     
     try:
         cf_root = state["cf_root"]
-        version = state["version"]
-        
         temp_dir = Path(cf_root) / "temp"
-        version_dir = Path(cf_root) / version
         
-        # Clear temp
+        # Clear temp completely for next save cycle
         if temp_dir.exists():
             shutil.rmtree(temp_dir)
         
-        # Copy version to temp
+        # Recreate empty temp directory
         temp_dir.mkdir(parents=True, exist_ok=True)
-        for item in version_dir.iterdir():
-            if item.is_file():
-                shutil.copy2(item, temp_dir / item.name)
-            elif item.is_dir():
-                shutil.copytree(item, temp_dir / item.name, dirs_exist_ok=True)
         
-        logger.info(f"Synced temp/ to {version}")
+        logger.info(f"Cleared temp/ - ready for next changes")
         
     except Exception as e:
-        logger.error(f"Failed to sync temp: {str(e)}")
-        state["errors"].append(f"Sync temp error: {str(e)}")
+        logger.error(f"Failed to clear temp: {str(e)}")
+        state["errors"].append(f"Clear temp error: {str(e)}")
         # Don't fail the whole operation if sync fails
     
     return state

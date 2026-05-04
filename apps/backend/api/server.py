@@ -63,6 +63,7 @@ class TaskCreateRequest(APIBaseModel):
 class SaveChangesPayload(BaseModel):
     """Payload for save changes request from frontend"""
     type: str  # "save_changes"
+    cfRoot: str  # Absolute path to .contextforge from user's workspace
     version: str
     previousVersion: str
     changes: Dict[str, Any]  # {added[], removed[], modified[]}
@@ -184,8 +185,12 @@ async def run_save_task(task_id: str, payload: SaveChangesPayload):
         
         broadcast_message("setup", f"Prepared {len(file_contents)} files")
         
-        # Get CF root from environment or use default
-        cf_root = os.getenv("CF_ROOT", ".contextforge")
+        # Get CF root from payload (sent by frontend from user's workspace)
+        cf_root = payload.cfRoot
+        if not cf_root:
+            raise ValueError("cfRoot not provided in payload")
+        
+        logger.info(f"Using CF root: {cf_root}")
         
         # Run save coordinator
         logger.info(f"Starting save_coordinator for task {task_id}")
@@ -233,6 +238,7 @@ async def create_task(payload: SaveChangesPayload):
     Expected payload:
     {
       "type": "save_changes",
+      "cfRoot": "/absolute/path/to/.contextforge",
       "version": "v2",
       "previousVersion": "v1",
       "changes": {"added": [...], "removed": [...], "modified": [...]},

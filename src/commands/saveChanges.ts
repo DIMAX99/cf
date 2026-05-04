@@ -210,9 +210,13 @@ export async function saveChanges(context: vscode.ExtensionContext) {
     try {
       const backendService = BackendService.getInstance();
 
+      // Get the CF root path from the user's workspace
+      const cfRoot = CFStateManager.getCFRoot();
+
       // Prepare payload
       const payload = {
         type: "save_changes",
+        cfRoot: cfRoot.fsPath,  // Send absolute path to .contextforge
         version: nextVersionName,
         previousVersion: activeVersion,
         changes: {
