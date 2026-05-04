@@ -103,6 +103,7 @@ async def run_context_updates(state: SaveCoordinatorState) -> SaveCoordinatorSta
         agent_contexts = state["agent_contexts"]
         changed_file_contents = state["changed_file_contents"]
         diff = state["diff"]
+        version = state["version"]  # Get version from state
         
         # Prepare tasks for each changed file
         tasks = []
@@ -126,6 +127,8 @@ async def run_context_updates(state: SaveCoordinatorState) -> SaveCoordinatorSta
             
             # Create task for this file
             task = run_context_update(
+                cf_root=cf_root,
+                version=version,
                 file_path=file_path,
                 old_code={"content": old_context.summary if old_context else "No previous content"},
                 new_code={"content": new_code},
@@ -163,15 +166,15 @@ async def run_context_updates(state: SaveCoordinatorState) -> SaveCoordinatorSta
 
 async def create_new_version(state: SaveCoordinatorState) -> SaveCoordinatorState:
     """
-    Node 3: Create new version with ONLY changed files + metadata
-    v2 contains: changed files (added/removed/modified) + global/ with contexts and snapshot
+    Node 3: Create new version with ONLY metadata (NO file contents)
+    v2 contains: LLM analysis of changes only (in global/contexts/)
+    This is a documentation version, not a code snapshot
     """
-    logger.info(f"Creating new version {state['version']} with changed files only")
+    logger.info(f"Creating new version {state['version']} with metadata only")
     
     try:
         cf_root = state["cf_root"]
         version = state["version"]
-        changed_file_contents = state["changed_file_contents"]
         updated_contexts = state["updated_contexts"]
         diff = state["diff"]
         
@@ -180,28 +183,17 @@ async def create_new_version(state: SaveCoordinatorState) -> SaveCoordinatorStat
         global_dir = version_path / "global"
         global_dir.mkdir(parents=True, exist_ok=True)
         
-        # 1. Write ONLY changed files to v2
-        for file_path in changed_file_contents.keys():
-            try:
-                file_full_path = version_path / file_path
-                file_full_path.parent.mkdir(parents=True, exist_ok=True)
-                
-                # Write actual file content
-                with open(file_full_path, "w", encoding="utf-8") as f:
-                    f.write(changed_file_contents[file_path])
-                logger.info(f"Wrote changed file: {file_path}")
-            except Exception as e:
-                logger.error(f"Failed to write file {file_path}: {str(e)}")
-                state["errors"].append(f"Write file error for {file_path}: {str(e)}")
-        
-        # 2. Copy snapshot metadata to global/
+        # 1. Copy snapshot metadata to global/ (file tree structure from temp)
         temp_snapshot = Path(cf_root) / "temp" / "snapshot.json"
         version_snapshot = global_dir / "snapshot.json"
         if temp_snapshot.exists():
             shutil.copy2(temp_snapshot, version_snapshot)
-            logger.info(f"Copied snapshot to {version}/global/")
+            logger.info(f"Copied workspace snapshot to {version}/global/")
+        else:
+            logger.warning(f"No temp snapshot found at {temp_snapshot}")
         
-        # 3. Write FileContext metadata for changed files to global/contexts/
+        # 2. Write FileContext metadata for changed files to global/contexts/
+        # This contains: which functions changed, line numbers, LLM summary
         contexts_dir = global_dir / "contexts"
         contexts_dir.mkdir(parents=True, exist_ok=True)
         
@@ -213,12 +205,12 @@ async def create_new_version(state: SaveCoordinatorState) -> SaveCoordinatorStat
                 
                 with open(context_file, "w") as f:
                     json.dump(file_context.model_dump(), f, indent=2, default=str)
-                logger.info(f"Wrote context metadata for {file_path}")
+                logger.info(f"Wrote context analysis for {file_path}")
             except Exception as e:
                 logger.error(f"Failed to write context for {file_path}: {str(e)}")
                 state["errors"].append(f"Write context error for {file_path}: {str(e)}")
         
-        # 4. Write diff summary to global/
+        # 3. Write diff summary to global/
         try:
             diff_summary = {
                 "added": diff.get("added", []),
@@ -247,38 +239,11 @@ async def create_new_version(state: SaveCoordinatorState) -> SaveCoordinatorStat
 
 async def update_current_json(state: SaveCoordinatorState) -> SaveCoordinatorState:
     """
-    Node 4: Update current.json with new version number
-    Increments version and persists to disk
+    Node 4: NO-OP - Frontend handles version state via CFStateManager
+    Backend is stateless and doesn't update current.json
     """
-    logger.info(f"Updating current.json to {state['version']}")
-    
-    try:
-        cf_root = state["cf_root"]
-        new_version = state["version"]
-        
-        current_file = Path(cf_root) / "current.json"
-        
-        # Read current config
-        current_config = {}
-        if current_file.exists():
-            with open(current_file, "r") as f:
-                current_config = json.load(f)
-        
-        # Update version
-        current_config["version"] = new_version
-        current_config["last_updated"] = datetime.utcnow().isoformat()
-        
-        # Write back
-        with open(current_file, "w") as f:
-            json.dump(current_config, f, indent=2)
-        
-        logger.info(f"Updated current.json to {new_version}")
-        
-    except Exception as e:
-        logger.error(f"Failed to update current.json: {str(e)}")
-        state["errors"].append(f"Update current.json error: {str(e)}")
-        state["status"] = "failed"
-    
+    logger.info(f"Backend completed processing {state['version']}")
+    logger.info("Frontend will update current.json using CFStateManager")
     return state
 
 
@@ -381,7 +346,8 @@ async def build_summary(state: SaveCoordinatorState) -> SaveCoordinatorState:
 def create_graph():
     """
     Create and compile the save coordinator workflow
-    Sequential nodes: load → update → create → current → sync → summary
+    Sequential nodes: load → update → create → temp_sync → summary
+    (current.json update handled by frontend via CFStateManager)
     """
     workflow = StateGraph(SaveCoordinatorState)
     
@@ -389,7 +355,6 @@ def create_graph():
     workflow.add_node("load_relevant_agents", load_relevant_agents)
     workflow.add_node("run_context_updates", run_context_updates)
     workflow.add_node("create_new_version", create_new_version)
-    workflow.add_node("update_current_json", update_current_json)
     workflow.add_node("sync_temp", sync_temp)
     workflow.add_node("build_summary", build_summary)
     
@@ -397,8 +362,7 @@ def create_graph():
     workflow.set_entry_point("load_relevant_agents")
     workflow.add_edge("load_relevant_agents", "run_context_updates")
     workflow.add_edge("run_context_updates", "create_new_version")
-    workflow.add_edge("create_new_version", "update_current_json")
-    workflow.add_edge("update_current_json", "sync_temp")
+    workflow.add_edge("create_new_version", "sync_temp")
     workflow.add_edge("sync_temp", "build_summary")
     workflow.add_edge("build_summary", END)
     

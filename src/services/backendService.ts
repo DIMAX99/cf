@@ -118,6 +118,41 @@ export class BackendService {
   }
 
   /**
+   * Make an authenticated GET request to the backend
+   * GET {endpoint}
+   */
+  async get<T>(endpoint: string): Promise<T | null> {
+    try {
+      const backendUrl = this.getBackendUrl();
+      const apiKey = this.getApiKey();
+
+      if (!backendUrl) {
+        throw new Error("Backend URL not configured");
+      }
+
+      const url = `${backendUrl}${endpoint.startsWith("/") ? endpoint : "/" + endpoint}`;
+
+      const response = await fetch(url, {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+          ...(apiKey && { "X-API-Key": apiKey })
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(`Backend returned ${response.status}`);
+      }
+
+      const data = await response.json() as T;
+      return data;
+    } catch (error) {
+      console.warn("Backend GET request failed:", error);
+      return null;
+    }
+  }
+
+  /**
    * Connect to WebSocket for streaming task progress
    * @param taskId Task ID to stream progress for
    * @param onMessage Callback for each progress message

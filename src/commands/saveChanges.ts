@@ -278,6 +278,49 @@ export async function saveChanges(context: vscode.ExtensionContext) {
       // Continue with local save even if backend fails
     }
 
+    // Step 8B: Wait for backend task to complete
+    outputChannel.appendLine("\n⏳ Waiting for backend to complete LLM analysis...");
+    let backendSuccess = false;
+    let backendError: string | null = null;
+    
+    if (taskId) {
+      try {
+        const backendService = BackendService.getInstance();
+        // Poll task status until completed or failed
+        let taskStatus = "pending";
+        let attempts = 0;
+        const maxAttempts = 120; // 2 minutes with 1s interval
+        
+        while ((taskStatus === "pending" || taskStatus === "running") && attempts < maxAttempts) {
+          await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
+          
+          try {
+            const taskResult = await backendService.get<any>(`/tasks/${taskId}`);
+            taskStatus = taskResult.status;
+            
+            if (taskStatus === "completed" || taskStatus === "completed_with_errors") {
+              backendSuccess = true;
+              outputChannel.appendLine(`   ✅ Backend completed: ${taskStatus}`);
+            } else if (taskStatus === "failed") {
+              backendError = taskResult.error || "Unknown backend error";
+              outputChannel.appendLine(`   ❌ Backend failed: ${backendError}`);
+              break;
+            }
+          } catch (e) {
+            attempts++;
+          }
+        }
+        
+        if (taskStatus === "pending" || taskStatus === "running") {
+          backendError = "Backend task timed out";
+          outputChannel.appendLine(`   ⚠️  Backend task timed out after ${maxAttempts}s`);
+        }
+      } catch (error) {
+        backendError = String(error);
+        outputChannel.appendLine(`   ⚠️  Could not verify backend status: ${error}`);
+      }
+    }
+
     // Step 9: Save temp snapshot as new version
     outputChannel.appendLine("\n💾 Promoting temp snapshot to new version...");
     try {
@@ -313,9 +356,6 @@ export async function saveChanges(context: vscode.ExtensionContext) {
     // Step 11: Update current.json with new version
     outputChannel.appendLine("\n📝 Updating version configuration...");
     try {
-      const cfRoot = CFStateManager.getCFRoot();
-      const currentUri = vscode.Uri.joinPath(cfRoot, "current.json");
-
       const updatedConfig = {
         ...currentConfig,
         activeVersion: nextVersionName,
@@ -323,7 +363,7 @@ export async function saveChanges(context: vscode.ExtensionContext) {
         lastUpdatedAt: new Date().toISOString(),
       };
 
-      await FileSystemService.writeJSON(currentUri, updatedConfig);
+      await CFStateManager.updateCurrent(updatedConfig);
       outputChannel.appendLine(
         `   ✅ Updated current.json: activeVersion = ${nextVersionName}`
       );

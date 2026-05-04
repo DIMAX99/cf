@@ -11,13 +11,14 @@ from langgraph.graph import StateGraph, END
 from pydantic import BaseModel, ValidationError
 
 from schemas.context import FileContext, FunctionSignature
-from memory.context_writer import write_file_context, _append_changelog
 
 logger = logging.getLogger(__name__)
 
 
 class ContextUpdateState(TypedDict):
     """State object for the context update agent workflow"""
+    cf_root: str  # Path to .contextforge from user's workspace
+    version: str  # Current version (e.g., "v2")
     agent_name: str
     file_path: str
     old_code: Dict[str, Any]
@@ -71,17 +72,14 @@ class AnalysisResult(BaseModel):
 
 
 def create_llm() -> ChatGoogleGenerativeAI:
-    """Create Gemini LLM instance via Google API with retry and structured output"""
+    """Create Gemini LLM instance via Google API"""
     api_key = os.getenv("GOOGLE_API_KEY")
     if not api_key:
         raise ValueError("GOOGLE_API_KEY environment variable not set")
-    if api_key:
-        print(api_key)
+    
     return ChatGoogleGenerativeAI(
-        model="gemini-1.5-pro",  # Use gemini-2.0-flash for faster responses
-        api_key=api_key,
-        temperature=0.3,  # Lower temperature for consistent structure
-    ).with_retry(stop_after_attempt=2)  # Retry once on failure
+        model="gemini-2.5-flash"
+    )
 
 
 async def analyze_changes_node(state: ContextUpdateState) -> ContextUpdateState:
@@ -92,8 +90,9 @@ async def analyze_changes_node(state: ContextUpdateState) -> ContextUpdateState:
     """
     logger.info(f"Analyzing changes for {state['file_path']}")
     
-    # LLM with structured output and retry built-in
-    llm = create_llm().with_structured_output(AnalysisResult)
+    # Create LLM, apply structured output, then retry
+    base_llm = create_llm()
+    llm = base_llm.with_structured_output(AnalysisResult).with_retry(stop_after_attempt=2)
     
     old_code_str = json.dumps(state["old_code"], indent=2) if state["old_code"] else "// No old code"
     new_code_str = json.dumps(state["new_code"], indent=2) if state["new_code"] else "// No new code"
@@ -161,7 +160,7 @@ async def generate_changelog_node(state: ContextUpdateState) -> ContextUpdateSta
         state["changelog_entry"] = "Unable to generate changelog - analysis failed"
         return state
     
-    llm = create_llm()  # No structured output needed for free text
+    llm = create_llm().with_retry(stop_after_attempt=2)  # Retry on failure
     analysis = state["analyzed_changes"]
     
     system_prompt = """You are a technical writer. Write a concise, user-friendly changelog entry describing code changes.
@@ -299,26 +298,14 @@ async def write_context_node(state: ContextUpdateState) -> ContextUpdateState:
         return state
     
     try:
-        cf_root = ".contextforge"  # Would come from config
-        target_dir = "v1"  # Would come from current version
-        folder_name = "code"
+        # NOTE: save_coordinator will write the FileContext to disk
+        # We don't write here to avoid duplication and path confusion
+        logger.info(f"Context update complete - save_coordinator will persist to disk")
         
-        # Write the file context
-        write_file_context(
-            cf_root=cf_root,
-            target_dir=target_dir,
-            folder_name=folder_name,
-            context=state["updated_context"]
-        )
-        
-        # Write changelog entry
-        if state["changelog_entry"]:
-            _append_changelog(
-                cf_root=cf_root,
-                entry_type="file_updated",
-                target_path=state["file_path"],
-                description=state["changelog_entry"]
-            )
+        # DEPRECATED: These writes are now handled by save_coordinator
+        # which writes to cfRoot/version/global/contexts/ with base64-encoded filenames
+        # write_file_context(...)
+        # _append_changelog(...)
         
         logger.info(f"Context written successfully for {state['file_path']}")
         
@@ -358,6 +345,8 @@ context_update_graph = create_graph()
 
 
 async def run_context_update(
+    cf_root: str,
+    version: str,
     file_path: str,
     old_code: Dict[str, Any],
     new_code: Dict[str, Any],
@@ -368,6 +357,8 @@ async def run_context_update(
     Execute the context update agent workflow
     
     Args:
+        cf_root: Path to .contextforge from user's workspace
+        version: Current version (e.g., "v2")
         file_path: Path to the file being updated
         old_code: Previous code content
         new_code: New code content
@@ -379,6 +370,8 @@ async def run_context_update(
     """
     
     initial_state: ContextUpdateState = {
+        "cf_root": cf_root,
+        "version": version,
         "agent_name": "context_update_agent",
         "file_path": file_path,
         "old_code": old_code,
