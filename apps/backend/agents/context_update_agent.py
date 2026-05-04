@@ -4,7 +4,7 @@ import os
 from typing import TypedDict, Optional, List, Any, Dict
 from datetime import datetime
 
-from langchain_core.language_model.llm import LLM
+from langchain_core.language_models import BaseLanguageModel
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, END
@@ -20,41 +20,44 @@ class ContextUpdateState(TypedDict):
     """State object for the context update agent workflow"""
     agent_name: str
     file_path: str
-    old_code: Dict[str, Any]  # Old code content by section (functions, classes, etc)
-    new_code: Dict[str, Any]  # New code content by section
-    old_context: Optional[FileContext]  # Previous FileContext object
-    diff_summary: str  # Human-readable diff summary from frontend
-    analyzed_changes: Optional[Dict[str, Any]]  # LLM analysis output
-    changelog_entry: Optional[str]  # Human-readable changelog
-    updated_context: Optional[FileContext]  # Generated/updated FileContext
-    validation_errors: List[str]  # Any validation errors encountered
+    old_code: Dict[str, Any]
+    new_code: Dict[str, Any]
+    old_context: Optional[FileContext]
+    diff_summary: str
+    analyzed_changes: Optional[Dict[str, Any]]
+    changelog_entry: Optional[str]
+    updated_context: Optional[FileContext]
+    validation_errors: List[str]
     retry_count: int
+
+
+class FunctionChange(BaseModel):
+    """Function change metadata"""
+    name: str
+    change_type: str  # "added", "removed", "modified"
+    line_start: Optional[int] = None
+    line_end: Optional[int] = None
+    signature: str
+    return_type: str
+    parameters: List[Dict[str, Any]]
+    description: str
+    dependencies: Optional[List[str]] = None
+
+
+class ClassChange(BaseModel):
+    """Class change metadata"""
+    name: str
+    change_type: str  # "added", "removed", "modified"
+    line_start: Optional[int] = None
+    line_end: Optional[int] = None
+    methods: List[FunctionChange]
+    description: str
 
 
 class AnalysisResult(BaseModel):
     """Structured output from LLM analysis"""
-    
-    class FunctionChange(BaseModel):
-        name: str
-        change_type: str  # "added", "removed", "modified"
-        line_start: Optional[int] = None
-        line_end: Optional[int] = None
-        signature: str
-        return_type: str
-        parameters: List[Dict[str, Any]]
-        description: str
-        dependencies: Optional[List[str]] = None
-    
-    class ClassChange(BaseModel):
-        name: str
-        change_type: str  # "added", "removed", "modified"
-        line_start: Optional[int] = None
-        line_end: Optional[int] = None
-        methods: List[FunctionChange]
-        description: str
-    
-    purpose: str  # Overall file purpose
-    summary: str  # Concise summary of all changes
+    purpose: str
+    summary: str
     functions_added: List[FunctionChange]
     functions_removed: List[FunctionChange]
     functions_modified: List[FunctionChange]
@@ -67,7 +70,7 @@ class AnalysisResult(BaseModel):
     removed_exports: List[str]
 
 
-def create_llm() -> LLM:
+def create_llm() -> ChatGoogleGenerativeAI:
     """Create Gemini LLM instance via Google API with retry and structured output"""
     api_key = os.getenv("GOOGLE_API_KEY")
     if not api_key:

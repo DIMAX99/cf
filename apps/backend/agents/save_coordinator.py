@@ -11,7 +11,7 @@ from langgraph.graph import StateGraph, END
 from pydantic import BaseModel
 
 from schemas.context import FileContext, FunctionSignature
-from context_update_agent import run_context_update
+from agents.context_update_agent import run_context_update
 from memory.context_writer import write_file_context, write_snapshot_metadata
 
 logger = logging.getLogger(__name__)

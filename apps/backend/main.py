@@ -1,24 +1,10 @@
 import os
 from dotenv import load_dotenv
 import uvicorn
-from fastapi import FastAPI
 
 load_dotenv()
-
-app = FastAPI()
-
-
-@app.get("/")
-def read_root():
-    """Root endpoint."""
-    return {"message": "Welcome to Context Forge API"}
-
-
-@app.get("/health")
-def health_check():
-    """Health check endpoint."""
-    return {"status": "healthy"}
-
+# Import the actual app from api/server.py
+from api.server import app
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
