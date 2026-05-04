@@ -33,6 +33,14 @@
       {
         "command": "cf.createAgent",
         "title": "ContextForge: Create Agent"
+      },
+      {
+        "command": "cf.saveChanges",
+        "title": "ContextForge: Save Changes"
+      },
+      {
+        "command": "cf.refreshVersionHistory",
+        "title": "ContextForge: Refresh Version History"
       }
     ],
     "configuration": {

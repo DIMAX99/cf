@@ -116,4 +116,74 @@ export class BackendService {
       return null;
     }
   }
+
+  /**
+   * Connect to WebSocket for streaming task progress
+   * @param taskId Task ID to stream progress for
+   * @param onMessage Callback for each progress message
+   * @param onError Callback for errors
+   * @param onClose Callback when connection closes
+   * @returns Function to close the connection
+   */
+  async connectWebSocket(
+    taskId: string,
+    onMessage: (data: unknown) => void,
+    onError?: (error: Error) => void,
+    onClose?: () => void
+  ): Promise<() => void> {
+    try {
+      const backendUrl = this.getBackendUrl();
+      const apiKey = this.getApiKey();
+
+      if (!backendUrl) {
+        throw new Error("ContextForge backend URL not configured");
+      }
+
+      if (!apiKey) {
+        throw new Error("ContextForge API key not configured");
+      }
+
+      // Convert http/https to ws/wss
+      const wsUrl = backendUrl
+        .replace(/^https:/, "wss:")
+        .replace(/^http:/, "ws:");
+
+      const wsUrlWithParams = `${wsUrl}/ws/tasks/${taskId}?api_key=${encodeURIComponent(apiKey)}`;
+      
+      const ws = new WebSocket(wsUrlWithParams);
+
+      ws.addEventListener("open", () => {
+        console.log(`WebSocket connected for task ${taskId}`);
+      });
+
+      ws.addEventListener("message", (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          onMessage(data);
+        } catch (error) {
+          console.error("Failed to parse WebSocket message:", error);
+        }
+      });
+
+      ws.addEventListener("error", (event) => {
+        const error = new Error(`WebSocket error: ${event.type}`);
+        onError?.(error);
+      });
+
+      ws.addEventListener("close", () => {
+        console.log(`WebSocket closed for task ${taskId}`);
+        onClose?.();
+      });
+
+      // Return close function
+      return () => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.close();
+        }
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      throw new Error(`Failed to connect WebSocket: ${errorMessage}`);
+    }
+  }
 }

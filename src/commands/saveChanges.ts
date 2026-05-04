@@ -3,6 +3,7 @@ import { CFStateManager } from "../core/CFStateManager";
 import { SnapshotService, SnapshotFile } from "../services/SnapShotService";
 import { DiffService } from "../services/DiffService";
 import { FileSystemService } from "../services/FileSystemService";
+import { BackendService } from "../services/backendService";
 
 /**
  * Command to save workspace changes as a new version
@@ -171,7 +172,79 @@ export async function saveChanges(context: vscode.ExtensionContext) {
       }
     }
 
-    // Step 8: Save temp snapshot as new version
+    // Step 8: Send to backend and stream progress
+    outputChannel.appendLine("\n🌐 Sending to backend...");
+    let taskId: string | null = null;
+    let wsCloseFunc: (() => void) | null = null;
+
+    try {
+      const backendService = BackendService.getInstance();
+
+      // Prepare payload
+      const payload = {
+        type: "save_changes",
+        version: nextVersionName,
+        previousVersion: activeVersion,
+        changes: {
+          added: diff.added.map(f => f.path),
+          removed: diff.removed.map(f => f.path),
+          modified: diff.modified.map(m => m.file.path),
+        },
+        files: filesWithContent?.map(f => ({
+          path: f.path,
+          content: f.content,
+          language: f.language,
+          size: f.size,
+        })) || [],
+      };
+
+      // Send POST request
+      const response = await backendService.post<{ taskId: string }>(
+        "/tasks",
+        payload
+      );
+
+      if (!response?.taskId) {
+        outputChannel.appendLine("   ❌ Failed to create backend task");
+        vscode.window.showErrorMessage("Failed to send changes to backend");
+        return;
+      }
+
+      taskId = response.taskId;
+      outputChannel.appendLine(`   ✅ Task created: ${taskId}`);
+
+      // Connect WebSocket to stream progress
+      outputChannel.appendLine("\n📡 Opening progress stream...");
+      wsCloseFunc = await backendService.connectWebSocket(
+        taskId,
+        (data: unknown) => {
+          const stepData = data as Record<string, unknown>;
+          const step = stepData.step as string || "progress";
+          const message = stepData.message as string || "";
+          const status = stepData.status as string;
+
+          outputChannel.appendLine(`   📍 ${step}: ${message}`);
+
+          // Show status badge if present
+          if (status === "error") {
+            vscode.window.showErrorMessage(`Backend error: ${message}`);
+          }
+        },
+        (error) => {
+          outputChannel.appendLine(`   ❌ WebSocket error: ${error.message}`);
+        },
+        () => {
+          outputChannel.appendLine("   ✅ Progress stream closed");
+        }
+      );
+
+      outputChannel.appendLine("   ✅ Connected to progress stream");
+    } catch (error) {
+      outputChannel.appendLine(`   ⚠️  Backend communication issue: ${error}`);
+      // Continue with local save even if backend fails
+    }
+
+    // Step 9: Save temp snapshot as new version
     outputChannel.appendLine("\n💾 Promoting temp snapshot to new version...");
     try {
       if (!tempSnapshot) {
@@ -185,7 +258,7 @@ export async function saveChanges(context: vscode.ExtensionContext) {
       return;
     }
 
-    // Step 9: Clear temp snapshot
+    // Step 10: Clear temp snapshot
     outputChannel.appendLine("\n🗑️  Clearing temp snapshot...");
     try {
       const cfRoot = CFStateManager.getCFRoot();
@@ -203,7 +276,7 @@ export async function saveChanges(context: vscode.ExtensionContext) {
       // Don't fail the operation if temp cleanup fails
     }
 
-    // Step 10: Update current.json with new version
+    // Step 11: Update current.json with new version
     outputChannel.appendLine("\n📝 Updating version configuration...");
     try {
       const cfRoot = CFStateManager.getCFRoot();
@@ -230,6 +303,19 @@ export async function saveChanges(context: vscode.ExtensionContext) {
     outputChannel.appendLine("\n✨ Save operation completed successfully!");
     outputChannel.appendLine(`   Version: ${nextVersionName}`);
     outputChannel.appendLine(`   Changes: ${totalChanges} files`);
+
+    // Close WebSocket if still open
+    if (wsCloseFunc) {
+      try {
+        wsCloseFunc();
+      } catch (error) {
+        console.warn("Error closing WebSocket:", error);
+      }
+    }
+
+    // Refresh version history sidebar
+    outputChannel.appendLine("\n🔄 Refreshing sidebar...");
+    await vscode.commands.executeCommand("cf.refreshVersionHistory");
 
     vscode.window.showInformationMessage(
       `✅ Changes saved as ${nextVersionName}`
