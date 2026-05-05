@@ -129,7 +129,15 @@ class AnalysisResult(BaseModel):
     moduleContract: str
 
     # ── Runtime context ──────────────────────────────────────────────────
-    runtimeContext: Optional[str] = None
+    runtimeContext: Literal[
+        "browser",
+        "node",
+        "edge",
+        "worker",
+        "serverless",
+        "python_async",
+        "python_sync",
+    ]
 
     # ── API surface ───────────────────────────────────────────────────────
     exports: List[str] = []
@@ -178,7 +186,7 @@ def create_llm() -> ChatGoogleGenerativeAI:
     api_key = os.getenv("GOOGLE_API_KEY")
     if not api_key:
         raise ValueError("GOOGLE_API_KEY environment variable not set")
-    return ChatGoogleGenerativeAI(model="gemini-2.5-flash")
+    return ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite-preview")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -206,6 +214,8 @@ Fields that matter most:
   - purpose / moduleContract: WHY this file exists in the system.
   - contract (per function): what callers can rely on.
   - sideEffects: db writes, HTTP calls, cache mutations, event emissions.
+  - runtimeContext: exactly one of browser | node | edge | worker |
+    serverless | python_async | python_sync. Do not write prose here.
   - calls: which other functions/modules this calls — enables impact analysis.
   - changeReason: WHY the code changed (not what) — prevents regressions.
   - knownIssues: things an editor must know to avoid making things worse.
@@ -251,6 +261,7 @@ DIFF SUMMARY:
 
 Extract the full analysis.  Pay special attention to:
 - The module's CONTRACT (what callers rely on)
+- runtimeContext must be exactly one of: browser, node, edge, worker, serverless, python_async, python_sync
 - Side effects of each function (db, http, cache, events, file I/O)
 - WHY this change was made (infer from the diff if not obvious)
 - Any known issues or tech debt introduced
@@ -460,7 +471,7 @@ async def validate_output_node(state: ContextUpdateState) -> ContextUpdateState:
             module_contract=a.get("moduleContract"),
 
             language=_detect_language(state["file_path"]),
-            runtime_context=a.get("runtimeContext"),
+            runtime_context=a["runtimeContext"],
 
             exports=a.get("exports", []),
             internal_imports=a.get("internalImports", []),
@@ -940,7 +951,7 @@ async def run_context_update(
 #         return state
     
 #     try:
-#         # NOTE: save_coordinator will write the FileContext to disk
+#         #: save_coordinator will write the FileContext to disk
 #         # We don't write here to avoid duplication and path confusion
 #         logger.info(f"Context update complete - save_coordinator will persist to disk")
         

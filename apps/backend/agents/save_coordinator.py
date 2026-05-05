@@ -153,7 +153,7 @@ async def run_context_updates(state: SaveCoordinatorState) -> SaveCoordinatorSta
                 cf_root=cf_root,
                 version=version,
                 file_path=file_path,
-                old_code={"content": old_context.summary if old_context else "No previous content"},
+                old_code={"content": old_context.ai_summary if old_context and old_context.ai_summary else "No previous content"},
                 new_code={"content": new_code},
                 old_context=old_context,
                 diff_summary=diff_summary,
@@ -334,8 +334,8 @@ async def build_summary(state: SaveCoordinatorState) -> SaveCoordinatorState:
         # Collect key changes from updated contexts
         key_changes = []
         for file_path, context in updated_contexts.items():
-            if context.summary:
-                key_changes.append(f"• {file_path}: {context.summary[:100]}...")
+            if context.ai_summary:
+                key_changes.append(f"• {file_path}: {context.ai_summary[:100]}...")
         
         summary_text = "\n".join(summary_parts)
         if key_changes:
