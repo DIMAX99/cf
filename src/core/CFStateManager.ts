@@ -111,13 +111,18 @@ export class CFStateManager {
             );
         }
 
-        if (!current.activeVersion) {
-            throw new Error("Invalid current.json: missing activeVersion");
-        }
         if (typeof current.latestVersion !== "number") {
             throw new Error(
                 "Invalid current.json: latestVersion is missing or not a number"
             );
+        }
+        if (current.activeVersion === null && current.latestVersion !== 0) {
+            throw new Error(
+                "Invalid current.json: activeVersion can be null only before the first save"
+            );
+        }
+        if (current.activeVersion === "" || current.activeVersion === undefined) {
+            throw new Error("Invalid current.json: missing activeVersion");
         }
 
         this.currentCache = current;
@@ -203,6 +208,14 @@ export class CFStateManager {
         // Happens right after saveChanges clears temp, before the user makes
         // any new edits that would recreate temp/global.json.
         const current = await this.getActiveVersion();
+        if (!current.activeVersion) {
+            throw new Error(
+                "temp/global.json not found and no active version exists yet. " +
+                "ContextForge may not be initialized correctly. " +
+                "Please run 'ContextForge: Init CF' again."
+            );
+        }
+
         const versionedGlobalUri = vscode.Uri.joinPath(
             this.getCFRoot(), current.activeVersion, "global.json"
         );

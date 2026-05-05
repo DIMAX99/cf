@@ -65,7 +65,7 @@ class SaveChangesPayload(APIBaseModel):
     type: str  # "save_changes"
     cfRoot: str  # Absolute path to .contextforge from user's workspace
     version: str
-    previousVersion: str
+    previousVersion: Optional[str] = None
     changes: Dict[str, Any]  # {added[], removed[], modified[]}
     files: list  # [{path, content, language, size}]
 
@@ -132,7 +132,7 @@ async def update_context(req: UpdateContextRequest):
             current_config = get_current_config(req.cf_root)
             if not current_config:
                 raise HTTPException(status_code=400, detail="current.json not found or invalid")
-            copy_temp_to_version(req.cf_root, current_config.active_version, req.new_version)
+            copy_temp_to_version(req.cf_root, current_config.active_version or "", req.new_version)
             
         return {"status": "success", "message": f"{req.update_type} context updated"}
     

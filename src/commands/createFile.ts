@@ -2,7 +2,8 @@ import * as vscode from "vscode";
 import { createFileContextTemplate } from "../utils/templates";
 import { CFStateManager } from "../core/CFStateManager";
 import { FileSystemService } from "../services/FileSystemService";
-import { FolderContext } from "../utils/types";
+import { AgentConfig, FolderContext } from "../utils/types";
+import { getTypedContextUri, toWorkspaceRelativePath } from "../utils/contextPaths";
 
 const createFile = vscode.commands.registerCommand("cf.createFile", async () => {
   const outputChannel = vscode.window.createOutputChannel("context-forge");
@@ -16,7 +17,6 @@ const createFile = vscode.commands.registerCommand("cf.createFile", async () => 
       return;
     }
 
-    // Prompt for file name
     const fileName = await vscode.window.showInputBox({
       prompt: "Enter file name (with extension)",
       placeHolder: "e.g. utils.ts",
@@ -28,7 +28,7 @@ const createFile = vscode.commands.registerCommand("cf.createFile", async () => 
           return "File name contains invalid characters.";
         }
         return null;
-      }
+      },
     });
 
     if (!fileName) {
@@ -36,16 +36,13 @@ const createFile = vscode.commands.registerCommand("cf.createFile", async () => 
       return;
     }
 
-    // Get global config and build QuickPick of tracked folders
     const globalConfig = await CFStateManager.getGlobal();
-
-    const folderOptions = globalConfig.folderAgents.flatMap((agent) =>
-      agent.folders.map((folderName) => ({
-        label: folderName,
+    const folderOptions = (globalConfig.folderAgents || []).flatMap((agent) =>
+      (agent.folders || []).map((folderPath) => ({
+        label: folderPath,
         description: `Agent: ${agent.agentName}`,
-        folderName,
-        agentName: agent.agentName,
-        agentId: agent.agentId
+        folderPath,
+        agent,
       }))
     );
 
@@ -57,7 +54,7 @@ const createFile = vscode.commands.registerCommand("cf.createFile", async () => 
     }
 
     const selectedFolder = await vscode.window.showQuickPick(folderOptions, {
-      placeHolder: "Select a folder for this file"
+      placeHolder: "Select a folder for this file",
     });
 
     if (!selectedFolder) {
@@ -65,132 +62,100 @@ const createFile = vscode.commands.registerCommand("cf.createFile", async () => 
       return;
     }
 
-    // 1. Create the REAL file in the workspace folder
-    const realFileUri = vscode.Uri.joinPath(
-      workspace.uri,
-      selectedFolder.folderName,
-      fileName
-    );
-
-    // Ensure the real folder exists in workspace
-    const realFolderUri = vscode.Uri.joinPath(workspace.uri, selectedFolder.folderName);
+    const realFolderUri = vscode.Uri.joinPath(workspace.uri, selectedFolder.folderPath);
     await FileSystemService.ensureDirectory(realFolderUri);
 
-    // Only create if it doesn't already exist
+    const realFileUri = vscode.Uri.joinPath(realFolderUri, fileName.trim());
     const realFileExists = await FileSystemService.exists(realFileUri);
     if (realFileExists) {
       vscode.window.showErrorMessage(
-        `File "${fileName}" already exists in "${selectedFolder.folderName}".`
+        `File "${fileName}" already exists in "${selectedFolder.folderPath}".`
       );
       return;
     }
 
     await vscode.workspace.fs.writeFile(realFileUri, new Uint8Array());
-    outputChannel.appendLine(`✓ Created real file: ${realFileUri.fsPath}`);
+    outputChannel.appendLine(`Created workspace file: ${realFileUri.fsPath}`);
 
-    // 2. Create context file in .contextforge/temp/{folderName}/
     const cfRoot = CFStateManager.getCFRoot();
-    const tempFolderUri = vscode.Uri.joinPath(cfRoot, "temp", selectedFolder.folderName);
-    await FileSystemService.ensureDirectory(tempFolderUri);
+    const filesFolderUri = vscode.Uri.joinPath(cfRoot, "temp", "files");
+    const foldersFolderUri = vscode.Uri.joinPath(cfRoot, "temp", "folders");
+    const agentsFolderUri = vscode.Uri.joinPath(cfRoot, "temp", "agents");
+    await FileSystemService.ensureDirectory(filesFolderUri);
+    await FileSystemService.ensureDirectory(foldersFolderUri);
+    await FileSystemService.ensureDirectory(agentsFolderUri);
 
+    const fileRelativePath = toWorkspaceRelativePath(realFileUri);
     const fileContext = createFileContextTemplate(
-      fileName,
-      selectedFolder.agentName,
-      selectedFolder.agentId
+      fileName.trim(),
+      selectedFolder.agent.agentName,
+      selectedFolder.agent.agentId
     );
+    fileContext.filePath = fileRelativePath;
 
-    // filePath points to the REAL file, not the context file
-    fileContext.filePath = realFileUri.fsPath;
-
-    const fileContextUri = vscode.Uri.joinPath(tempFolderUri, `${fileName}.context.json`);
+    const fileContextUri = getTypedContextUri(cfRoot, "temp", "files", fileRelativePath);
     await FileSystemService.writeJSON(fileContextUri, fileContext);
-    outputChannel.appendLine(`✓ Created context file: ${fileContextUri.fsPath}`);
+    outputChannel.appendLine(`Created file context: ${fileContextUri.fsPath}`);
 
-    // 3. Update _folder.context.json in temp/{folderName}/
-    const folderContextUri = vscode.Uri.joinPath(tempFolderUri, "_folder.context.json");
-    const folderContextExists = await FileSystemService.exists(folderContextUri);
-
-    if (folderContextExists) {
+    const folderContextUri = getTypedContextUri(
+      cfRoot,
+      "temp",
+      "folders",
+      selectedFolder.folderPath
+    );
+    if (await FileSystemService.exists(folderContextUri)) {
       const folderContext = await FileSystemService.readJSON<FolderContext>(folderContextUri);
-
-      if (!folderContext.files) {
-        folderContext.files = [];
-      }
-
-      const alreadyTracked = folderContext.files.some((f) => f.fileName === fileName);
+      const alreadyTracked = (folderContext.files || []).some(
+        (existingFile) => existingFile.filePath === fileRelativePath
+      );
       if (!alreadyTracked) {
-        folderContext.files.push(createFileContextTemplate(
-          fileName,
-          selectedFolder.agentName,
-          selectedFolder.agentId
-        ));
+        folderContext.files = folderContext.files || [];
+        folderContext.files.push(fileContext);
       }
-
       folderContext.updatedAt = new Date().toISOString();
       await FileSystemService.writeJSON(folderContextUri, folderContext);
-      outputChannel.appendLine(`✓ Updated _folder.context.json: added ${fileName}`);
+      outputChannel.appendLine(`Updated folder context for ${selectedFolder.folderPath}`);
     } else {
       outputChannel.appendLine(
-        `⚠ Warning: _folder.context.json not found in temp/${selectedFolder.folderName}. ` +
-        `Run 'ContextForge: Create Folder' to initialize it.`
+        `Warning: folder context not found for "${selectedFolder.folderPath}".`
       );
     }
 
-    // 4. Update agent's files[] in temp/agents/{agentName}.json
-    const agentFileUri = vscode.Uri.joinPath(
-      cfRoot, "temp", "agents", `${selectedFolder.agentName}.json`
-    );
-    const agentFileExists = await FileSystemService.exists(agentFileUri);
-
-    if (agentFileExists) {
-      const agentData = await FileSystemService.readJSON<any>(agentFileUri);
-
-      if (!agentData.files) {
-        agentData.files = [];
-      }
-
-      const alreadyInAgent = agentData.files.some((f: string) => f === realFileUri.fsPath);
-      if (!alreadyInAgent) {
-        agentData.files.push(realFileUri.fsPath);
-      }
-
-      agentData.updatedAt = new Date().toISOString();
-      await FileSystemService.writeJSON(agentFileUri, agentData);
-      outputChannel.appendLine(`✓ Updated agent "${selectedFolder.agentName}" files list`);
-    } else {
-      outputChannel.appendLine(
-        `⚠ Warning: Agent file not found for "${selectedFolder.agentName}". ` +
-        `Create the agent first using 'ContextForge: Create Agent'.`
-      );
+    const agent = selectedFolder.agent as AgentConfig;
+    agent.files = agent.files || [];
+    if (!agent.files.includes(fileRelativePath)) {
+      agent.files.push(fileRelativePath);
     }
+    const agentFileUri = vscode.Uri.joinPath(agentsFolderUri, `${agent.agentId}.json`);
+    await FileSystemService.writeJSON(agentFileUri, agent);
+    outputChannel.appendLine(`Updated agent context: temp/agents/${agent.agentId}.json`);
 
-    // 5. Update files[] in temp/global.json folderAgents entry
-    const agent = globalConfig.folderAgents.find(
-      (a) => a.agentName === selectedFolder.agentName
+    const globalAgent = globalConfig.folderAgents.find(
+      (existingAgent) => existingAgent.agentId === agent.agentId
     );
-    if (agent) {
-      if (!agent.files) {
-        agent.files = [];
-      }
-      if (!agent.files.includes(realFileUri.fsPath)) {
-        agent.files.push(realFileUri.fsPath);
+    if (globalAgent) {
+      globalAgent.files = globalAgent.files || [];
+      if (!globalAgent.files.includes(fileRelativePath)) {
+        globalAgent.files.push(fileRelativePath);
       }
       await CFStateManager.updateGlobal({ folderAgents: globalConfig.folderAgents });
-      outputChannel.appendLine(`✓ Updated temp/global.json agent files list`);
+      outputChannel.appendLine("Updated temp/global.json agent files list");
     }
 
     CFStateManager.invalidateCache();
 
-    outputChannel.appendLine(`\n✓ Done! Created "${fileName}" in "${selectedFolder.folderName}".`);
+    outputChannel.appendLine(
+      `\nDone. Created "${fileRelativePath}" for agent "${agent.agentName}".`
+    );
     outputChannel.show(true);
 
     vscode.window.showInformationMessage(
-      `ContextForge: Created "${fileName}" in "${selectedFolder.folderName}".`
+      `ContextForge: Created "${fileRelativePath}" successfully.`
     );
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     vscode.window.showErrorMessage(`Failed to create file: ${errorMessage}`);
-    outputChannel.appendLine(`✗ Error: ${errorMessage}`);
+    outputChannel.appendLine(`Error: ${errorMessage}`);
     outputChannel.show(true);
   }
 });

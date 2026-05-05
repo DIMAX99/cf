@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import uuid
+import base64
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -26,6 +27,11 @@ def _atomic_write_json(target_path: Path, data: dict):
         if temp_path.exists():
             os.remove(temp_path)
         raise e
+
+
+def _encode_context_path(context_path: str) -> str:
+    encoded = base64.urlsafe_b64encode(context_path.encode()).decode()
+    return encoded.rstrip("=")
 
 
 def _append_changelog(
@@ -93,7 +99,8 @@ def _append_changelog(
 def write_file_context(cf_root: str, target_dir: str, folder_name: str, context: FileContext):
     """Atomically writes a file context JSON and appends a changelog entry."""
     try:
-        target_path = Path(cf_root) / target_dir / folder_name / f"{context.file_name}.context.json"
+        encoded_path = _encode_context_path(context.file_path)
+        target_path = Path(cf_root) / target_dir / "files" / f"{encoded_path}.context.json"
         data = context.model_dump(exclude_none=True)
         _atomic_write_json(target_path, data)
 
@@ -111,7 +118,8 @@ def write_file_context(cf_root: str, target_dir: str, folder_name: str, context:
 def write_folder_context(cf_root: str, target_dir: str, folder_name: str, context: FolderContext):
     """Atomically writes a folder context JSON and appends a changelog entry."""
     try:
-        target_path = Path(cf_root) / target_dir / folder_name / "_folder.context.json"
+        encoded_path = _encode_context_path(context.folder_path)
+        target_path = Path(cf_root) / target_dir / "folders" / f"{encoded_path}.context.json"
         data = context.model_dump(exclude_none=True)
         _atomic_write_json(target_path, data)
 
@@ -129,7 +137,7 @@ def write_folder_context(cf_root: str, target_dir: str, folder_name: str, contex
 def write_agent_context(cf_root: str, target_dir: str, agent_name: str, context: AgentConfig):
     """Atomically writes an agent JSON and appends a changelog entry."""
     try:
-        target_path = Path(cf_root) / target_dir / "agents" / f"{agent_name}.json"
+        target_path = Path(cf_root) / target_dir / "agents" / f"{context.agent_id}.json"
         data = context.model_dump(exclude_none=True)
         _atomic_write_json(target_path, data)
 
@@ -192,11 +200,11 @@ def copy_temp_to_version(cf_root: str, active_version: str, new_version: str):
     """
     try:
         root_path = Path(cf_root)
-        active_path = root_path / active_version
+        active_path = root_path / active_version if active_version else None
         new_path = root_path / new_version
         temp_path = root_path / "temp"
 
-        if active_path.exists():
+        if active_path and active_path.exists():
             shutil.copytree(active_path, new_path, dirs_exist_ok=True)
         else:
             new_path.mkdir(parents=True, exist_ok=True)
