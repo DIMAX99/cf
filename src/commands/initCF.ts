@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { FileSystemService } from "../services/FileSystemService";
 import { CurrentConfig, GlobalConfig } from "../utils/types";
+import { createGlobalConfigTemplate } from "../utils/templates";
 
 type SnapshotEntry = {
   path: string;
@@ -51,18 +52,36 @@ const initCF = vscode.commands.registerCommand("cf.initCF", async () => {
       projectRoot: workspace.uri.fsPath,
       lastUpdatedAt: now,
     };
-
-    const globalConfig: GlobalConfig = {
-      projectName: workspace.name,
-      projectGoal: "",
-      techStack: [],
-
-      folderAgents: [],
-      architectureDecisions: [],
-
-      createdAt: now,
-      updatedAt: now,
-    };
+    
+    const projectName = await vscode.window.showInputBox({
+      prompt: "Enter project name",
+      placeHolder: "e.g. My Awesome Project",
+      validateInput: (value) => { 
+        if (!value || value.trim() === "") {
+          return "Project name cannot be empty.";
+        }
+        return "MyProject";
+      }
+    });
+    if (!projectName) {
+      vscode.window.showInformationMessage("Context-Forge initialization cancelled.");
+      return;
+    }
+    const projectGoal = await vscode.window.showInputBox({
+      prompt: "Enter project goal",
+      placeHolder: "e.g. ecommerce platform for handmade products, or internal tool for data analysis",
+      validateInput: (value) => {
+        if (!value || value.trim() === "") {
+          return "Project goal cannot be empty.";
+        }
+        return "A software system";
+      }
+    });
+    if (!projectGoal) {
+      vscode.window.showInformationMessage("Add a small project goal to help context-forge");
+      return;
+    }
+    const globalConfig: GlobalConfig = createGlobalConfigTemplate(projectName,projectGoal);
 
     const snapshot = await createWorkspaceSnapshot(workspace, now);
 
