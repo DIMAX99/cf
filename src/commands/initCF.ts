@@ -60,7 +60,7 @@ const initCF = vscode.commands.registerCommand("cf.initCF", async () => {
         if (!value || value.trim() === "") {
           return "Project name cannot be empty.";
         }
-        return "MyProject";
+        return null;
       }
     });
     if (!projectName) {
@@ -74,7 +74,7 @@ const initCF = vscode.commands.registerCommand("cf.initCF", async () => {
         if (!value || value.trim() === "") {
           return "Project goal cannot be empty.";
         }
-        return "A software system";
+        return null;
       }
     });
     if (!projectGoal) {
