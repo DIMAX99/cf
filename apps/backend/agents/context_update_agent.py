@@ -74,14 +74,26 @@ class AnalyzedParameter(BaseModel):
 
 
 class AnalyzedSideEffect(BaseModel):
-    kind: str
+    kind: Literal[
+        "db_read", "db_write", "db_delete",
+        "http_call", "file_read", "file_write",
+        "cache_read", "cache_write", "cache_invalidate",
+        "event_emit", "event_subscribe",
+        "env_read", "global_state_mutate",
+        "log_write", "metric_emit",
+        "auth_check", "session_mutate",
+    ]
     description: str
     conditional: bool = False
 
 
 class AnalyzedFunction(BaseModel):
     name: str
-    kind: str
+    kind: Literal[
+        "function", "method", "arrow_function", "class_method",
+        "constructor", "generator", "async_function", "hook",
+        "middleware", "decorator", "lambda",
+    ]
     # The contract is the single most important field —
     # it tells the LLM what callers depend on.
     contract: str
@@ -107,7 +119,10 @@ class AnalyzedFunction(BaseModel):
 
 class AnalyzedClass(BaseModel):
     name: str
-    kind: str
+    kind: Literal[
+        "class", "abstract_class", "interface", "type_alias",
+        "enum", "dataclass", "pydantic_model", "zod_schema",
+    ]
     contract: str
     properties: List[AnalyzedParameter] = []
     methods: List[AnalyzedFunction] = []
@@ -178,6 +193,19 @@ class AnalysisResult(BaseModel):
     aiSummary: str
 
 
+class GeneratedChangelogEntry(BaseModel):
+    type: Literal[
+        "feature_added", "bug_fixed", "refactor",
+        "performance_improvement", "security_fix",
+        "breaking_change", "dependency_update",
+        "test_added", "documentation", "architecture_change",
+    ]
+    what: str
+    why: str
+    breakingImpact: Optional[str] = None
+    migrationNotes: Optional[str] = None
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # LLM setup
 # ─────────────────────────────────────────────────────────────────────────────
@@ -214,6 +242,12 @@ Fields that matter most:
   - purpose / moduleContract: WHY this file exists in the system.
   - contract (per function): what callers can rely on.
   - sideEffects: db writes, HTTP calls, cache mutations, event emissions.
+    Each sideEffects.kind must be exactly one of:
+    db_read | db_write | db_delete | http_call | file_read | file_write |
+    cache_read | cache_write | cache_invalidate | event_emit |
+    event_subscribe | env_read | global_state_mutate | log_write |
+    metric_emit | auth_check | session_mutate.
+    For console logging, use log_write. Do not invent values.
   - runtimeContext: exactly one of browser | node | edge | worker |
     serverless | python_async | python_sync. Do not write prose here.
   - calls: which other functions/modules this calls — enables impact analysis.
@@ -262,6 +296,7 @@ DIFF SUMMARY:
 Extract the full analysis.  Pay special attention to:
 - The module's CONTRACT (what callers rely on)
 - runtimeContext must be exactly one of: browser, node, edge, worker, serverless, python_async, python_sync
+- sideEffects.kind must use only the allowed enum values; console output is log_write
 - Side effects of each function (db, http, cache, events, file I/O)
 - WHY this change was made (infer from the diff if not obvious)
 - Any known issues or tech debt introduced
@@ -297,7 +332,7 @@ Good why: "Removed in-memory token cache because it was returning stale tokens
           after password resets.  Tokens are now verified against the DB on
           every request.  Performance hit is acceptable (<5ms) given the bug severity."
 
-Format your response as a JSON object with these fields:
+Return a changelog object with these fields:
   type:           one of: feature_added | bug_fixed | refactor |
                           performance_improvement | security_fix |
                           breaking_change | dependency_update |
@@ -307,7 +342,7 @@ Format your response as a JSON object with these fields:
   breakingImpact: (optional) what this breaks for callers
   migrationNotes: (optional) what callers must do to adapt
 
-Return ONLY the JSON, no markdown fences.
+Do not include prose outside the changelog fields.
 """
 
 
@@ -322,7 +357,7 @@ async def generate_changelog_node(state: ContextUpdateState) -> ContextUpdateSta
         })
         return state
 
-    llm = create_llm().with_retry(stop_after_attempt=2)
+    llm = create_llm().with_structured_output(GeneratedChangelogEntry).with_retry(stop_after_attempt=2)
     analysis = state["analyzed_changes"]
 
     user_message = f"""Generate a changelog entry for this file change.
@@ -343,11 +378,11 @@ New module contract:      {analysis.get('moduleContract', 'N/A')}
 Diff summary: {state['diff_summary']}"""
 
     try:
-        response = await llm.ainvoke([
+        response: GeneratedChangelogEntry = await llm.ainvoke([
             SystemMessage(content=CHANGELOG_SYSTEM_PROMPT),
             HumanMessage(content=user_message),
         ])
-        state["changelog_entry"] = response.content.strip()
+        state["changelog_entry"] = json.dumps(response.model_dump(exclude_none=True))
     except Exception as e:
         logger.error(f"Changelog generation failed: {e}")
         state["changelog_entry"] = json.dumps({
