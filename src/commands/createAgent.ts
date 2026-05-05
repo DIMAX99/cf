@@ -2,14 +2,9 @@ import * as vscode from "vscode";
 import { CFStateManager } from "../core/CFStateManager";
 import { FileSystemService } from "../services/FileSystemService";
 import { AgentConfig, GlobalConfig } from "../utils/types";
+import { createAgentConfigTemplate } from "../utils/templates";
 
-interface AgentDefinition extends AgentConfig {
-  responsibilities: string[];
-  techScope: string[];
-  provides: string[];
-  canRead: string[];
-  canWrite: string[];
-}
+
 
 const createAgent = vscode.commands.registerCommand("cf.createAgent", async () => {
   const outputChannel = vscode.window.createOutputChannel("context-forge");
@@ -104,27 +99,12 @@ const createAgent = vscode.commands.registerCommand("cf.createAgent", async () =
     const now = new Date().toISOString();
 
     // Build agent object
-    const agent: AgentDefinition = {
-      agentId,
-      agentName,
-      role: "Custom Agent",
-      description,
-      folders: [],
-      files: [],
-      permissions: {
-        canRead: true,
-        canWrite: true,
-        canCreateFiles: true,
-        canDeleteFiles: true
-      },
-      createdAt: now,
-      updatedAt: now,
-      responsibilities,
-      techScope,
-      provides: [],
-      canRead: [],
-      canWrite: []
-    };
+    const agent: AgentConfig=createAgentConfigTemplate(agentName, description);
+    agent.agentId = agentId;
+    agent.responsibilities = responsibilities;
+    agent.techScope = techScope;
+    agent.createdAt = now;
+    agent.updatedAt = now;
 
     const cfRoot = CFStateManager.getCFRoot();
 

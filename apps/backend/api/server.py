@@ -60,7 +60,7 @@ class TaskCreateRequest(APIBaseModel):
     target_agent: Optional[str] = None
 
 
-class SaveChangesPayload(BaseModel):
+class SaveChangesPayload(APIBaseModel):
     """Payload for save changes request from frontend"""
     type: str  # "save_changes"
     cfRoot: str  # Absolute path to .contextforge from user's workspace

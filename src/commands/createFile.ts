@@ -119,16 +119,11 @@ const createFile = vscode.commands.registerCommand("cf.createFile", async () => 
 
       const alreadyTracked = folderContext.files.some((f) => f.fileName === fileName);
       if (!alreadyTracked) {
-        folderContext.files.push({
-          filePath: realFileUri.fsPath,
+        folderContext.files.push(createFileContextTemplate(
           fileName,
-          assignedAgentId: selectedFolder.agentId,
-          assignedAgentName: selectedFolder.agentName,
-          purpose: "",
-          summary: "",
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        });
+          selectedFolder.agentName,
+          selectedFolder.agentId
+        ));
       }
 
       folderContext.updatedAt = new Date().toISOString();

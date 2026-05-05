@@ -1,0 +1,182 @@
+{
+  "_comment": "This is what a well-populated FileContext looks like for a real file.",
+  "_comment2": "Compare to the old schema — the LLM now knows what callers depend on,",
+  "_comment3": "what side effects exist, what is risky to change, and WHY the last change happened.",
+
+  "filePath": "apps/backend/api/server.py",
+  "fileName": "server.py",
+
+  "assignedAgentId": "backend_agent_001",
+  "assignedAgentName": "BackendAgent",
+
+  "purpose": "FastAPI application entrypoint. Owns HTTP routing, middleware wiring, WebSocket task-streaming, and API key authentication. Does NOT contain business logic — it delegates to save_coordinator and context loaders. All responses are structured JSON.",
+
+  "moduleContract": "Given a valid X-API-Key header, this module routes requests to the correct handler and returns structured JSON. Auth failures always return 403. Handler errors always return 500 with a detail string. Never returns 200 with an error body.",
+
+  "language": "python",
+  "runtimeContext": "python_async",
+
+  "exports": [
+    "app"
+  ],
+
+  "internalImports": [
+    "memory.context_loader.load_full_project_context",
+    "memory.context_loader.get_current_config",
+    "memory.context_writer.write_file_context",
+    "memory.context_writer.write_folder_context",
+    "memory.context_writer.write_agent_context",
+    "memory.context_writer.copy_temp_to_version",
+    "schemas.context.FileContext",
+    "schemas.context.FolderContext",
+    "schemas.context.AgentConfig",
+    "agents.save_coordinator.run_save_coordinator"
+  ],
+
+  "externalImports": [
+    "fastapi", "pydantic", "uvicorn", "asyncio", "uuid", "logging"
+  ],
+
+  "functions": [
+    {
+      "name": "verify_api_key",
+      "kind": "async_function",
+      "contract": "Raises HTTP 403 if the X-API-Key header is missing or does not match EXPECTED_API_KEY. Returns the key string if valid. Never returns None.",
+      "signature": "async def verify_api_key(api_key: str = Security(api_key_header)) -> str",
+      "parameters": [
+        {
+          "name": "api_key",
+          "type": "str",
+          "optional": true,
+          "description": "Value of the X-API-Key request header. FastAPI injects this via Security(api_key_header).",
+          "nullable": true
+        }
+      ],
+      "returnType": "str",
+      "returnDescription": "The valid API key string. 403 HTTPException is raised instead of returning on auth failure.",
+      "lineStart": 30,
+      "lineEnd": 34,
+      "complexity": 1,
+      "sideEffects": [],
+      "calls": [],
+      "throws": "HTTPException(status_code=403) when key is absent or wrong",
+      "visibility": "internal",
+      "deprecated": false,
+      "lastUpdatedAt": "2025-05-01T10:00:00Z"
+    },
+    {
+      "name": "create_task",
+      "kind": "async_function",
+      "contract": "Accepts a SaveChangesPayload, creates an in-memory task record, fires a background coroutine via asyncio.create_task, and returns {taskId, status: 'pending'} immediately. The task runs asynchronously — callers must poll /tasks/{id} or subscribe via WebSocket to know when it completes.",
+      "signature": "async def create_task(payload: SaveChangesPayload) -> dict",
+      "parameters": [
+        {
+          "name": "payload",
+          "type": "SaveChangesPayload",
+          "optional": false,
+          "description": "Save request from the VS Code extension. Must include cfRoot, version, previousVersion, changes, and files array.",
+          "nullable": false
+        }
+      ],
+      "returnType": "dict",
+      "returnDescription": "Always returns {taskId: str, status: 'pending'}. Never blocks on LLM analysis.",
+      "lineStart": 170,
+      "lineEnd": 210,
+      "complexity": 2,
+      "sideEffects": [
+        {
+          "kind": "global_state_mutate",
+          "description": "Writes to tasks_db dict and task_subscribers dict at module level — not thread-safe.",
+          "conditional": false
+        },
+        {
+          "kind": "event_emit",
+          "description": "Fires asyncio.create_task(run_save_task(...)) — side effect is NOT awaited. Task runs independently.",
+          "conditional": false
+        }
+      ],
+      "calls": ["run_save_task", "asyncio.create_task"],
+      "throws": "500 HTTPException on unexpected errors. Does NOT throw on LLM failures — those are captured inside run_save_task.",
+      "concurrencyNotes": "tasks_db and task_subscribers are plain dicts with no locks. Concurrent saves for the same task_id would race. In practice safe because task_ids are UUIDs.",
+      "visibility": "public",
+      "deprecated": false,
+      "lastUpdatedAt": "2025-05-01T10:00:00Z"
+    },
+    {
+      "name": "websocket_task_stream",
+      "kind": "async_function",
+      "contract": "Streams task progress messages to a WebSocket client until the task reaches a terminal state (completed or failed). Validates api_key via query parameter. Sends historical logs on connect, then streams new messages via a per-connection asyncio.Queue.",
+      "signature": "async def websocket_task_stream(websocket: WebSocket, task_id: str, api_key: str = Query(...))",
+      "parameters": [
+        {"name": "websocket", "type": "WebSocket", "optional": false, "description": "FastAPI WebSocket connection.", "nullable": false},
+        {"name": "task_id", "type": "str", "optional": false, "description": "Task ID from the /tasks POST response.", "nullable": false},
+        {"name": "api_key", "type": "str", "optional": false, "description": "Auth key passed as ?api_key= query param (not header, WebSocket limitation).", "nullable": false}
+      ],
+      "returnType": "None",
+      "returnDescription": "Returns when the task reaches a terminal state or the client disconnects.",
+      "lineStart": 240,
+      "lineEnd": 310,
+      "complexity": 3,
+      "sideEffects": [
+        {
+          "kind": "global_state_mutate",
+          "description": "Appends to task_subscribers[task_id] on connect, removes on disconnect. Not thread-safe.",
+          "conditional": false
+        }
+      ],
+      "calls": ["websocket.accept", "websocket.send_json", "websocket.close", "asyncio.sleep"],
+      "throws": "Catches WebSocketDisconnect silently. Closes with code 4001 on auth failure, 4004 on missing task.",
+      "concurrencyNotes": "Each WebSocket connection gets its own asyncio.Queue. Multiple clients can subscribe to the same task_id simultaneously.",
+      "performanceNotes": "Polling loop uses asyncio.sleep(0.1) — 100ms latency per message. Acceptable for progress streaming.",
+      "visibility": "public",
+      "deprecated": false,
+      "lastUpdatedAt": "2025-05-01T10:00:00Z"
+    }
+  ],
+
+  "classes": [],
+
+  "consumes": [
+    "HTTP requests with X-API-Key header",
+    "SaveChangesPayload from VS Code extension (cfRoot path, version, file contents)",
+    "LoadContextRequest with cf_root, optional agent_name, folder_path",
+    "UpdateContextRequest with cf_root, target_dir, update_type, data payload"
+  ],
+
+  "produces": [
+    "JSON responses: {status, data} on success, {detail} on error",
+    "WebSocket message stream: {step, message, status} per task progress event",
+    "Background tasks persisted via run_save_coordinator (side effect via tasks_db)"
+  ],
+
+  "aggregateSideEffects": [
+    {"kind": "global_state_mutate", "description": "tasks_db and task_subscribers are module-level dicts. Mutated on every /tasks POST and WebSocket connect/disconnect.", "conditional": false},
+    {"kind": "file_write", "description": "Delegates to context_writer via /context/update endpoint — writes to .contextforge/temp/", "conditional": true},
+    {"kind": "http_call", "description": "No outbound HTTP from this module — save_coordinator handles LLM calls", "conditional": false}
+  ],
+
+  "moduleLevelState": "tasks_db: Dict[str, Dict] — in-memory task store, lost on restart. task_subscribers: Dict[str, List[asyncio.Queue]] — per-task WebSocket subscriber queues. EXPECTED_API_KEY: str — loaded from env at startup.",
+
+  "complexityScore": 3,
+
+  "knownIssues": [
+    "tasks_db is in-memory — all task history is lost on server restart. If the VS Code extension reconnects after a restart it will get 404 for its task_id.",
+    "No rate limiting on /tasks endpoint — a malicious caller could spam LLM analysis jobs.",
+    "task_subscribers dict is never cleaned up after task completion — memory leak on long-running servers with many tasks."
+  ],
+
+  "techDebt": [
+    "tasks_db should be replaced with a persistent store (Redis or SQLite) before production use.",
+    "API key is hardcoded as default in the env var fallback — must be removed before any public deployment."
+  ],
+
+  "testCoverage": "none",
+  "testFile": null,
+
+  "lastChangeReason": "Moved cfRoot resolution from a hardcoded path to payload.cfRoot to support multiple workspaces. Previously the server assumed a single workspace path which broke multi-project usage.",
+
+  "aiSummary": "FastAPI server that acts as a thin routing layer. Delegates all business logic to save_coordinator and context_loader. Key risk areas: in-memory task store (lost on restart), module-level state mutation in WebSocket handlers, no rate limiting.",
+
+  "createdAt": "2025-04-01T00:00:00Z",
+  "updatedAt": "2025-05-01T10:00:00Z"
+}
