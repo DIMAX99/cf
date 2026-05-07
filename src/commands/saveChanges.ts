@@ -4,6 +4,8 @@ import { SnapshotService, SnapshotFile } from "../services/SnapshotService";
 import { DiffService } from "../services/DiffService";
 import { FileSystemService } from "../services/FileSystemService";
 import { BackendService } from "../services/backendService";
+import { createVersionMetaTemplate } from "../utils/templates";
+import { ChangelogEntry, GlobalConfig } from "../utils/types";
 
 /**
  * Command to save workspace changes as a new version
@@ -28,14 +30,14 @@ export async function saveChanges(context: vscode.ExtensionContext) {
     const nextVersionNumber = currentConfig.latestVersion + 1;
     const nextVersionName = `v${nextVersionNumber}`;
 
-    outputChannel.appendLine(`   Active version: ${activeVersion}`);
+    outputChannel.appendLine(`   Active version: ${activeVersion ?? "none"}`);
     outputChannel.appendLine(`   Next version: ${nextVersionName}`);
 
     // Step 2: Read active version snapshot (last saved state)
     outputChannel.appendLine("\n📸 Reading active version snapshot...");
     let activeSnapshot: SnapshotFile[] | null = null;
     try {
-      activeSnapshot = await SnapshotService.readSnapshot(activeVersion);
+      activeSnapshot = activeVersion ? await SnapshotService.readSnapshot(activeVersion) : null;
       if (activeSnapshot) {
         outputChannel.appendLine(`   Found ${activeSnapshot.length} files in ${activeVersion}`);
       } else {
@@ -202,7 +204,18 @@ export async function saveChanges(context: vscode.ExtensionContext) {
       }
     }
 
-    // Step 8: Send to backend and stream progress
+    // Step 8: Materialize typed memory before the backend may clear temp/
+    outputChannel.appendLine("\nPersisting staged ContextForge memory...");
+    try {
+      await promoteTypedMemoryToVersion(nextVersionName, nextVersionNumber, activeVersion);
+      outputChannel.appendLine(`   Staged memory copied to ${nextVersionName}`);
+    } catch (error) {
+      outputChannel.appendLine(`   Error copying staged memory: ${error}`);
+      vscode.window.showErrorMessage("Failed to prepare version memory");
+      return;
+    }
+
+    // Step 9: Send to backend and stream progress
     outputChannel.appendLine("\n🌐 Sending to backend...");
     let taskId: string | null = null;
     let wsCloseFunc: (() => void) | null = null;
@@ -398,5 +411,75 @@ export async function saveChanges(context: vscode.ExtensionContext) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     vscode.window.showErrorMessage(`Save changes failed: ${errorMessage}`);
     console.error("saveChanges error:", error);
+  }
+}
+
+async function promoteTypedMemoryToVersion(
+  version: string,
+  versionNumber: number,
+  parentVersion: string | null
+): Promise<void> {
+  const cfRoot = CFStateManager.getCFRoot();
+  const tempUri = vscode.Uri.joinPath(cfRoot, "temp");
+  const versionUri = vscode.Uri.joinPath(cfRoot, version);
+
+  await FileSystemService.ensureDirectory(versionUri);
+  await FileSystemService.ensureDirectory(vscode.Uri.joinPath(versionUri, "folders"));
+  await FileSystemService.ensureDirectory(vscode.Uri.joinPath(versionUri, "files"));
+  await FileSystemService.ensureDirectory(vscode.Uri.joinPath(versionUri, "agents"));
+
+  const globalConfig = await CFStateManager.getGlobal();
+  await FileSystemService.writeJSON<GlobalConfig>(
+    vscode.Uri.joinPath(versionUri, "global.json"),
+    globalConfig
+  );
+
+  await copyDirectoryIfExists(
+    vscode.Uri.joinPath(tempUri, "folders"),
+    vscode.Uri.joinPath(versionUri, "folders")
+  );
+  await copyDirectoryIfExists(
+    vscode.Uri.joinPath(tempUri, "files"),
+    vscode.Uri.joinPath(versionUri, "files")
+  );
+  await copyDirectoryIfExists(
+    vscode.Uri.joinPath(tempUri, "agents"),
+    vscode.Uri.joinPath(versionUri, "agents")
+  );
+
+  const tempChangelogUri = vscode.Uri.joinPath(tempUri, "changelog.json");
+  let changelog: ChangelogEntry[] = [];
+  if (await FileSystemService.exists(tempChangelogUri)) {
+    changelog = await FileSystemService.readJSON<ChangelogEntry[]>(tempChangelogUri);
+  }
+
+  const meta = createVersionMetaTemplate(version, versionNumber, "ContextForge");
+  meta.parentVersion = parentVersion ?? undefined;
+  meta.intent = parentVersion
+    ? `Commit staged ContextForge memory on top of ${parentVersion}.`
+    : "Create the first saved ContextForge memory version.";
+  meta.summary = `${version} captured the workspace snapshot and staged ContextForge memory.`;
+  meta.changelog = changelog;
+
+  await FileSystemService.writeJSON(vscode.Uri.joinPath(versionUri, "meta.json"), meta);
+}
+
+async function copyDirectoryIfExists(source: vscode.Uri, target: vscode.Uri): Promise<void> {
+  if (!(await FileSystemService.exists(source))) {
+    await FileSystemService.ensureDirectory(target);
+    return;
+  }
+
+  await FileSystemService.ensureDirectory(target);
+  const entries = await vscode.workspace.fs.readDirectory(source);
+  for (const [name, fileType] of entries) {
+    const sourceChild = vscode.Uri.joinPath(source, name);
+    const targetChild = vscode.Uri.joinPath(target, name);
+    if (fileType === vscode.FileType.Directory) {
+      await copyDirectoryIfExists(sourceChild, targetChild);
+    } else if (fileType === vscode.FileType.File) {
+      const bytes = await vscode.workspace.fs.readFile(sourceChild);
+      await vscode.workspace.fs.writeFile(targetChild, bytes);
+    }
   }
 }

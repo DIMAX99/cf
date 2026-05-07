@@ -4,6 +4,7 @@ import os
 import shutil
 import asyncio
 import base64
+import re
 from typing import TypedDict, Optional, List, Dict, Any
 from datetime import datetime
 from pathlib import Path
@@ -22,7 +23,7 @@ class SaveCoordinatorState(TypedDict):
     """State for the save workflow coordinator"""
     cf_root: str  # Path to .contextforge root
     version: str  # New version being created (e.g., "v2")
-    previous_version: str  # Previous version (e.g., "v1")
+    previous_version: Optional[str]  # Previous version (e.g., "v1"), or None on first save
     diff: Dict[str, Any]  # {added[], removed[], modified[]} from DiffService
     changed_file_contents: Dict[str, str]  # {filepath: content} of changed files
     agent_contexts: Dict[str, Optional[FileContext]]  # Current contexts for each file
@@ -44,6 +45,23 @@ def _increment_version(current_version: str) -> str:
     return f"v{num + 1}"
 
 
+def _encode_context_path(file_path: str) -> str:
+    encoded = base64.urlsafe_b64encode(file_path.encode()).decode()
+    return encoded.rstrip("=")
+
+
+def _camel_to_snake(name: str) -> str:
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
+
+
+def _normalize_keys(value):
+    if isinstance(value, list):
+        return [_normalize_keys(item) for item in value]
+    if isinstance(value, dict):
+        return {_camel_to_snake(key): _normalize_keys(item) for key, item in value.items()}
+    return value
+
+
 async def load_relevant_agents(state: SaveCoordinatorState) -> SaveCoordinatorState:
     """
     Node 1: Load current context for all changed files
@@ -62,14 +80,19 @@ async def load_relevant_agents(state: SaveCoordinatorState) -> SaveCoordinatorSt
         changed_files.update(diff.get("removed", []))
         changed_files.update(diff.get("modified", []))
         
-        # Load existing context for each file
         agent_contexts = {}
         for file_path in changed_files:
+            if not prev_version:
+                agent_contexts[file_path] = None
+                logger.info(f"No previous version for {file_path} (first save)")
+                continue
+
             try:
-                context_path = Path(cf_root) / prev_version / "code" / f"{file_path}.json"
+                encoded_path = _encode_context_path(file_path)
+                context_path = Path(cf_root) / prev_version / "files" / f"{encoded_path}.context.json"
                 if context_path.exists():
                     with open(context_path, "r") as f:
-                        data = json.load(f)
+                        data = _normalize_keys(json.load(f))
                         agent_contexts[file_path] = FileContext(**data)
                         logger.info(f"Loaded context for {file_path}")
                 else:
@@ -130,7 +153,7 @@ async def run_context_updates(state: SaveCoordinatorState) -> SaveCoordinatorSta
                 cf_root=cf_root,
                 version=version,
                 file_path=file_path,
-                old_code={"content": old_context.summary if old_context else "No previous content"},
+                old_code={"content": old_context.ai_summary if old_context and old_context.ai_summary else "No previous content"},
                 new_code={"content": new_code},
                 old_context=old_context,
                 diff_summary=diff_summary,
@@ -166,11 +189,9 @@ async def run_context_updates(state: SaveCoordinatorState) -> SaveCoordinatorSta
 
 async def create_new_version(state: SaveCoordinatorState) -> SaveCoordinatorState:
     """
-    Node 3: Create new version with ONLY metadata (NO file contents)
-    v2 contains: LLM analysis of changes only (in global/contexts/)
-    This is a documentation version, not a code snapshot
+    Node 3: Create/update the typed version memory layout.
     """
-    logger.info(f"Creating new version {state['version']} with metadata only")
+    logger.info(f"Creating typed version memory for {state['version']}")
     
     try:
         cf_root = state["cf_root"]
@@ -178,31 +199,34 @@ async def create_new_version(state: SaveCoordinatorState) -> SaveCoordinatorStat
         updated_contexts = state["updated_contexts"]
         diff = state["diff"]
         
-        # Create version directory structure
         version_path = Path(cf_root) / version
-        global_dir = version_path / "global"
-        global_dir.mkdir(parents=True, exist_ok=True)
-        
-        # 1. Copy snapshot metadata to global/ (file tree structure from temp)
+        version_path.mkdir(parents=True, exist_ok=True)
+
+        for typed_dir in ["folders", "files", "agents"]:
+            target_dir = version_path / typed_dir
+            target_dir.mkdir(parents=True, exist_ok=True)
+            temp_dir = Path(cf_root) / "temp" / typed_dir
+            if temp_dir.exists():
+                shutil.copytree(temp_dir, target_dir, dirs_exist_ok=True)
+
+        temp_global = Path(cf_root) / "temp" / "global.json"
+        if temp_global.exists():
+            shutil.copy2(temp_global, version_path / "global.json")
+
         temp_snapshot = Path(cf_root) / "temp" / "snapshot.json"
-        version_snapshot = global_dir / "snapshot.json"
+        version_snapshot = version_path / "snapshot.json"
         if temp_snapshot.exists():
             shutil.copy2(temp_snapshot, version_snapshot)
-            logger.info(f"Copied workspace snapshot to {version}/global/")
+            logger.info(f"Copied workspace snapshot to {version}/")
         else:
             logger.warning(f"No temp snapshot found at {temp_snapshot}")
-        
-        # 2. Write FileContext metadata for changed files to global/contexts/
-        # This contains: which functions changed, line numbers, LLM summary
-        contexts_dir = global_dir / "contexts"
-        contexts_dir.mkdir(parents=True, exist_ok=True)
-        
+
+        files_dir = version_path / "files"
         for file_path, file_context in updated_contexts.items():
             try:
-                # Base64 encode the file path to avoid filesystem issues
-                encoded_path = base64.b64encode(file_path.encode()).decode()
-                context_file = contexts_dir / f"{encoded_path}.json"
-                
+                encoded_path = _encode_context_path(file_path)
+                context_file = files_dir / f"{encoded_path}.context.json"
+
                 with open(context_file, "w") as f:
                     json.dump(file_context.model_dump(), f, indent=2, default=str)
                 logger.info(f"Wrote context analysis for {file_path}")
@@ -210,7 +234,6 @@ async def create_new_version(state: SaveCoordinatorState) -> SaveCoordinatorStat
                 logger.error(f"Failed to write context for {file_path}: {str(e)}")
                 state["errors"].append(f"Write context error for {file_path}: {str(e)}")
         
-        # 3. Write diff summary to global/
         try:
             diff_summary = {
                 "added": diff.get("added", []),
@@ -220,10 +243,10 @@ async def create_new_version(state: SaveCoordinatorState) -> SaveCoordinatorStat
                 "total_removed": len(diff.get("removed", [])),
                 "total_modified": len(diff.get("modified", [])),
             }
-            diff_file = global_dir / "diff.json"
+            diff_file = version_path / "diff.json"
             with open(diff_file, "w") as f:
                 json.dump(diff_summary, f, indent=2)
-            logger.info("Wrote diff summary to global/")
+            logger.info("Wrote diff summary")
         except Exception as e:
             logger.error(f"Failed to write diff summary: {str(e)}")
         
@@ -262,10 +285,13 @@ async def sync_temp(state: SaveCoordinatorState) -> SaveCoordinatorState:
         if temp_dir.exists():
             shutil.rmtree(temp_dir)
         
-        # Recreate empty temp directory
         temp_dir.mkdir(parents=True, exist_ok=True)
+        for typed_dir in ["folders", "files", "agents"]:
+            (temp_dir / typed_dir).mkdir(parents=True, exist_ok=True)
+        with open(temp_dir / "changelog.json", "w", encoding="utf-8") as f:
+            json.dump([], f, indent=2)
         
-        logger.info(f"Cleared temp/ - ready for next changes")
+        logger.info("Cleared temp/ typed staging directories - ready for next changes")
         
     except Exception as e:
         logger.error(f"Failed to clear temp: {str(e)}")
@@ -308,8 +334,8 @@ async def build_summary(state: SaveCoordinatorState) -> SaveCoordinatorState:
         # Collect key changes from updated contexts
         key_changes = []
         for file_path, context in updated_contexts.items():
-            if context.summary:
-                key_changes.append(f"• {file_path}: {context.summary[:100]}...")
+            if context.ai_summary:
+                key_changes.append(f"• {file_path}: {context.ai_summary[:100]}...")
         
         summary_text = "\n".join(summary_parts)
         if key_changes:
@@ -376,7 +402,7 @@ save_coordinator_graph = create_graph()
 async def run_save_coordinator(
     cf_root: str,
     version: str,
-    previous_version: str,
+    previous_version: Optional[str],
     diff: Dict[str, Any],
     changed_file_contents: Dict[str, str],
 ) -> Dict[str, Any]:

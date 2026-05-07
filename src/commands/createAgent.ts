@@ -1,10 +1,8 @@
 import * as vscode from "vscode";
 import { CFStateManager } from "../core/CFStateManager";
 import { FileSystemService } from "../services/FileSystemService";
-import { AgentConfig, GlobalConfig } from "../utils/types";
+import { AgentConfig } from "../utils/types";
 import { createAgentConfigTemplate } from "../utils/templates";
-
-
 
 const createAgent = vscode.commands.registerCommand("cf.createAgent", async () => {
   const outputChannel = vscode.window.createOutputChannel("context-forge");
@@ -12,7 +10,6 @@ const createAgent = vscode.commands.registerCommand("cf.createAgent", async () =
   try {
     await CFStateManager.guardInitialized();
 
-    // Prompt for agent name
     const agentName = await vscode.window.showInputBox({
       prompt: "Enter agent name",
       placeHolder: "e.g. AuthAgent, ComponentAgent",
@@ -24,7 +21,7 @@ const createAgent = vscode.commands.registerCommand("cf.createAgent", async () =
           return "Agent name contains invalid characters.";
         }
         return null;
-      }
+      },
     });
 
     if (!agentName) {
@@ -32,7 +29,6 @@ const createAgent = vscode.commands.registerCommand("cf.createAgent", async () =
       return;
     }
 
-    // Prompt for description
     const description = await vscode.window.showInputBox({
       prompt: "Enter agent description",
       placeHolder: "e.g. Handles authentication and authorization",
@@ -41,7 +37,7 @@ const createAgent = vscode.commands.registerCommand("cf.createAgent", async () =
           return "Description cannot be empty.";
         }
         return null;
-      }
+      },
     });
 
     if (!description) {
@@ -49,7 +45,6 @@ const createAgent = vscode.commands.registerCommand("cf.createAgent", async () =
       return;
     }
 
-    // Prompt for responsibilities (comma separated)
     const responsibilitiesInput = await vscode.window.showInputBox({
       prompt: "Enter responsibilities (comma separated)",
       placeHolder: "e.g. Authentication, Session Management, Password Reset",
@@ -58,7 +53,7 @@ const createAgent = vscode.commands.registerCommand("cf.createAgent", async () =
           return "At least one responsibility is required.";
         }
         return null;
-      }
+      },
     });
 
     if (!responsibilitiesInput) {
@@ -66,7 +61,6 @@ const createAgent = vscode.commands.registerCommand("cf.createAgent", async () =
       return;
     }
 
-    // Prompt for tech scope (comma separated)
     const techScopeInput = await vscode.window.showInputBox({
       prompt: "Enter technology scope (comma separated)",
       placeHolder: "e.g. Node.js, Express, JWT, bcrypt",
@@ -75,7 +69,7 @@ const createAgent = vscode.commands.registerCommand("cf.createAgent", async () =
           return "At least one technology is required.";
         }
         return null;
-      }
+      },
     });
 
     if (!techScopeInput) {
@@ -83,72 +77,61 @@ const createAgent = vscode.commands.registerCommand("cf.createAgent", async () =
       return;
     }
 
-    // Parse comma-separated values
+    const now = new Date().toISOString();
     const responsibilities = responsibilitiesInput
       .split(",")
       .map((item) => item.trim())
       .filter((item) => item.length > 0);
-
     const techScope = techScopeInput
       .split(",")
       .map((item) => item.trim())
       .filter((item) => item.length > 0);
 
-    // Generate agent ID
-    const agentId = `${agentName.toLowerCase()}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const now = new Date().toISOString();
-
-    // Build agent object
-    const agent: AgentConfig=createAgentConfigTemplate(agentName, description);
-    agent.agentId = agentId;
+    const agent: AgentConfig = createAgentConfigTemplate(agentName.trim(), "Project Agent");
+    agent.description = description.trim();
     agent.responsibilities = responsibilities;
     agent.techScope = techScope;
     agent.createdAt = now;
     agent.updatedAt = now;
 
     const cfRoot = CFStateManager.getCFRoot();
-
-    // 1. Write agent JSON to temp/agents/{agentName}.json
     const tempAgentsFolderUri = vscode.Uri.joinPath(cfRoot, "temp", "agents");
     await FileSystemService.ensureDirectory(tempAgentsFolderUri);
 
-    const agentFileUri = vscode.Uri.joinPath(tempAgentsFolderUri, `${agentName}.json`);
+    const agentFileUri = vscode.Uri.joinPath(tempAgentsFolderUri, `${agent.agentId}.json`);
     await FileSystemService.writeJSON(agentFileUri, agent);
-    outputChannel.appendLine(`✓ Created agent file: temp/agents/${agentName}.json`);
+    outputChannel.appendLine(`Created agent file: temp/agents/${agent.agentId}.json`);
 
-    // 2. Add agent to temp/global.json so createFolder can find it
-    const tempGlobalUri = vscode.Uri.joinPath(cfRoot, "temp", "global.json");
-    const tempGlobal = await FileSystemService.readJSON<GlobalConfig>(tempGlobalUri);
+    const globalConfig = await CFStateManager.getGlobal();
+    globalConfig.folderAgents = globalConfig.folderAgents || [];
 
-    tempGlobal.folderAgents = tempGlobal.folderAgents || [];
-
-    const alreadyExists = tempGlobal.folderAgents.some((a) => a.agentName === agentName);
+    const alreadyExists = globalConfig.folderAgents.some(
+      (existingAgent) => existingAgent.agentName === agent.agentName
+    );
     if (!alreadyExists) {
-      tempGlobal.folderAgents.push(agent);
+      globalConfig.folderAgents.push(agent);
     }
 
-    tempGlobal.updatedAt = now;
-    await FileSystemService.writeJSON(tempGlobalUri, tempGlobal);
-    outputChannel.appendLine(`✓ Added agent "${agentName}" to temp/global.json`);
-
+    await CFStateManager.updateGlobal({ folderAgents: globalConfig.folderAgents });
     CFStateManager.invalidateCache();
 
-    outputChannel.appendLine(`\nAgent Summary:`);
-    outputChannel.appendLine(`  Name: ${agentName}`);
-    outputChannel.appendLine(`  ID: ${agentId}`);
-    outputChannel.appendLine(`  Description: ${description}`);
+    outputChannel.appendLine(`Added agent "${agent.agentName}" to temp/global.json`);
+    outputChannel.appendLine("\nAgent Summary:");
+    outputChannel.appendLine(`  Name: ${agent.agentName}`);
+    outputChannel.appendLine(`  ID: ${agent.agentId}`);
+    outputChannel.appendLine(`  Description: ${agent.description}`);
     outputChannel.appendLine(`  Responsibilities: ${responsibilities.join(", ")}`);
     outputChannel.appendLine(`  Tech Scope: ${techScope.join(", ")}`);
-    outputChannel.appendLine(`\n✓ Agent creation completed successfully!`);
+    outputChannel.appendLine("\nAgent creation completed successfully!");
     outputChannel.show(true);
 
     vscode.window.showInformationMessage(
-      `ContextForge: Created agent "${agentName}" successfully.`
+      `ContextForge: Created agent "${agent.agentName}" successfully.`
     );
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     vscode.window.showErrorMessage(`Failed to create agent: ${errorMessage}`);
-    outputChannel.appendLine(`✗ Error: ${errorMessage}`);
+    outputChannel.appendLine(`Error: ${errorMessage}`);
     outputChannel.show(true);
   }
 });

@@ -9,7 +9,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface CurrentConfig {
-  activeVersion: string;
+  activeVersion: string | null;
   latestVersion: number;
   projectRoot: string;
   lastUpdatedAt: string;
